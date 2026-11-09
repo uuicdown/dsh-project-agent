@@ -19,5 +19,6 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
-      - run: pnpm test
+      # The client-entry test reads the built bundle, as an install does.
       - run: pnpm build
+      - run: pnpm test

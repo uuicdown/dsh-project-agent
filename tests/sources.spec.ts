@@ -15,6 +15,7 @@ import { cursorAt, POLL_HORIZON_MS } from '../src/sources/poll.ts'
 import { Store } from '../src/app/store.ts'
 import { Commands, commandError } from '../src/infra/commands.ts'
 import { HealthBoard } from '../src/infra/health.ts'
+import type { Health } from '../src/sources/host.ts'
 import { testDeployment } from './fixtures/deployment.ts'
 import { SettingsSchema, settingsPolicy } from '../src/policy.ts'
 import { sourceContextOf, type SourceContextDeps } from '../src/app/source-context.ts'
@@ -1070,6 +1071,14 @@ describe.skipIf(process.platform === 'win32')('feishu event consumer', () => {
     const store = new Store(join(dir, 'db.sqlite'))
     store.saveSettings(SettingsSchema.parse({ sources: { feishu: { enabled: true, config } } }))
     const board = new HealthBoard()
+    // Reports arrive interleaved from the CLI's two streams, so every one is recorded: a malformed line's error must be
+    // observable even when the consumer reports itself ready afterwards.
+    const reported: Health[] = []
+    const claim = board.claim.bind(board)
+    vi.spyOn(board, 'claim').mockImplementation((name: string, initial?: Health) => {
+      const entry = claim(name, initial)
+      return { ...entry, set: (health: Health) => { reported.push(health); entry.set(health) } }
+    })
     const sources = new SourceRegistry(() => store.settings(), board)
     sources.register(feishuKind)
     const assessor: Assessor = { request: vi.fn(async () => {}) }
@@ -1083,7 +1092,7 @@ describe.skipIf(process.platform === 'win32')('feishu event consumer', () => {
     const deps: SourceContextDeps = { store, engine, outbox: { send: () => {} }, commands, sources, deployment, ready: Promise.resolve(), configured: () => true,
       receive: (trigger: Trigger) => engine.receive(trigger) }
     const turnOff = () => store.saveSettings(SettingsSchema.parse({ sources: { feishu: { enabled: false, config: { chats: [] } } } }))
-    return { ctx: sourceContextOf(deps, feishuKind), health, store, turnOff }
+    return { ctx: sourceContextOf(deps, feishuKind), health, store, turnOff, reported }
   }
 
   /** A message event line as `event consume` prints it; a group message mentions the bot. */
@@ -1093,12 +1102,12 @@ describe.skipIf(process.platform === 'win32')('feishu event consumer', () => {
   it('takes in the event lines it reads, records each chat as direct or not, and reports a malformed line without stopping', async () => {
     writeFileSync(join(dir, 'events'), [event('om_1', 'oc_group', 'group'), event('om_2', 'oc_dm', 'p2p'), 'not json',
       event('om_3', 'oc_group', 'group')].join('\n') + '\n')
-    const { ctx, health, store } = consumerSource(cli('events'))
+    const { ctx, health, store, reported } = consumerSource(cli('events'))
     running = runFeishu(ctx, controller.signal)
     await vi.waitFor(() => expect(store.triggers.get(feishuTriggerId('om_3'))).toBeDefined(), until)
     expect(['om_1', 'om_2'].map(id => store.triggers.get(feishuTriggerId(id))?.meta.direct)).toEqual([false, true])
     expect(store.get(KV.feishu.chats)).toEqual({ oc_group: false, oc_dm: true })
-    expect(health.feishu).toMatchObject({ state: 'error', detail: expect.stringContaining('JSON') })
+    expect(reported.some(item => item.state === 'error' && String(item.detail).includes('JSON'))).toBe(true)
     controller.abort(); await running; store.close()
   }, 20_000)
   it('drops the events it reads once the Source is off', async () => {
