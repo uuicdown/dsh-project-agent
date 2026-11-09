@@ -16,7 +16,12 @@ function fixture(listed: string[]) {
   const entries: Entry[] = []
   const dictionaries: Record<string, unknown> = {}
   const ctx = {
-    slots: { inject: (_name: string, register: () => void) => register(), register: (options: Entry['options'], component: Entry['component']) => { entries.push({ options, component }); return () => {} } },
+    slots: { inject: (_name: string, register: () => void) => register(),
+      register: (options: Entry['options'], component: Entry['component']) => {
+        const entry = { options, component }
+        entries.push(entry)
+        return () => { const index = entries.indexOf(entry); if (index >= 0) entries.splice(index, 1) }
+      } },
     locale: { register: (ns: string, value: unknown) => { dictionaries[ns] = value; return () => {} }, bind: () => t },
     effect: (effect: () => unknown) => { effect() },
     sessions: { list: { getSnapshot: () => ({ phase: 'ready', byId: Object.fromEntries(listed.map(id => [id, {}])) }) }, refresh: vi.fn(async () => {}) },
@@ -184,4 +189,28 @@ it('groups the sidebar by project, names each project, and renames one in place 
   for (let i = 0; i < 5; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
   expect(renamed).toEqual([{ path: 'projects/project-a1b2c3d4e5f6', body: { name: '旋转词插件' } }])
   view.dispose()
+})
+
+it('hides the panel, the sidebar icon and the project seat while the plugin is disabled, and shows them again once it is on', async () => {
+  vi.useFakeTimers()
+  let enabled = false
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    const path = new URL(url, 'http://127.0.0.1').pathname.replace('/orchestrator/api/', '')
+    return path === 'state' ? Response.json({ enabled }) : Response.json({})
+  }))
+  const { entries } = fixture([])
+  const names = () => entries.map(entry => entry.options.name)
+  // The switch page is registered before the first read, and stays while the rest goes away.
+  expect(names()).toContain('plugins.row.config')
+  await vi.advanceTimersByTimeAsync(10)
+  expect(names()).toEqual(['plugins.row.config'])
+  enabled = true
+  await vi.advanceTimersByTimeAsync(4000)
+  // The switch page was registered first, so the three views join it; slot order comes from each registration's `order`.
+  expect([...names()].sort()).toEqual(['main', 'plugins.row.config', 'sidebar.panellist', 'sidebar.projects'])
+  // A host that cannot answer keeps the current views instead of dropping them.
+  vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch') }))
+  await vi.advanceTimersByTimeAsync(4000)
+  expect(names()).toContain('main')
+  vi.useRealTimers()
 })

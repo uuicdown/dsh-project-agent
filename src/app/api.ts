@@ -38,6 +38,7 @@ export interface Api {
   'POST tickets/:id/retry': { response: { retried: true } }
   'POST tickets/:id/stop': { response: { stopped: true } }
   'POST executor/pause': { body: { paused: boolean }; response: { paused: boolean } }
+  'POST plugin/enabled': { body: { enabled: boolean }; response: { enabled: boolean } }
   'PUT settings/:block': { body: { value: unknown; revision: number }; response: { revision: number; restarting: boolean } }
   'GET policy/history': { response: HistoryView }
   'POST policy-sync/:id': { response: { policy: unknown } }

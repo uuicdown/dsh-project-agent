@@ -4,11 +4,12 @@ import { Passes } from '../src/app/passes.ts'
 import type { Trigger } from '../src/core/index.ts'
 import { HealthBoard } from '../src/infra/health.ts'
 
-function passes(closing = () => false) {
+function passes(closing = () => false, enabled = () => true) {
   const health = new HealthBoard().claim('runtime', { state: 'starting', detail: '' })
   const engine = { receive: vi.fn(() => 'stored' as const), evaluateDue: vi.fn() }
   const effects = { kick: vi.fn(), idle: vi.fn(async () => {}) }
-  const value = new Passes({ engine, effects, health, lifetime: new AbortController().signal, configured: () => true, closing })
+  const value = new Passes({ engine, effects, health, lifetime: new AbortController().signal, configured: () => true,
+    enabled, closing })
   return { passes: value, engine, effects, health }
 }
 const trigger = { id: 't1', source: 'feishu', threads: [{ source: 'feishu', id: 'oc_1:om_1' }], actor: { source: 'feishu', id: 'ou_a' }, human: true,

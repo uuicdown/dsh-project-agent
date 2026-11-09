@@ -49,6 +49,9 @@ export interface HttpHost {
   readonly setupProblem?: SetupProblem | undefined
   readonly feishuProblem?: SetupProblem | undefined
   configured(): boolean
+  /** Whether the plugin is enabled; its state page and the switch itself stay reachable either way. */
+  enabled(): boolean
+  setEnabled(enabled: boolean): boolean
   links(): LinkTarget
   ticketEnvironment(ticket: Ticket): Variable[]
   checkSetup(): void
@@ -107,7 +110,7 @@ export function stateView(runtime: HttpHost) {
   const settings = runtime.store.settings()
   return { setup: setupView(runtime), load: { ...executorLoad(runtime.store, runtime.executor.activeCount()),
     maxWorkers: settings.executor.maxWorkers },
-    masterId: runtime.masterId, paused: settings.paused, health: runtime.health }
+    masterId: runtime.masterId, enabled: runtime.enabled(), paused: settings.paused, health: runtime.health }
 }
 const views = (runtime: HttpHost): ViewHost => ({ store: runtime.store, sources: runtime.sources, links: runtime.links() })
 const setupState = (runtime: HttpHost): SetupState => ({ deployment: runtime.configured() ? runtime.deployment : undefined,
@@ -202,6 +205,8 @@ function routes(runtime: HttpHost): Routes {
     'POST tickets/:id/retry': ({ params }) => { const id = ticket(params.id); runtime.engine.retryTicket(id); return { retried: true } },
     'POST tickets/:id/stop': ({ params }) => { const id = ticket(params.id); runtime.engine.stopTicket(id); return { stopped: true } },
     'POST executor/pause': async ({ body }) => runtime.settings.pause(z.object({ paused: z.boolean() }).parse(await body()).paused, 'panel'),
+    // The switch lives on the plugin page, which stays mounted while the panel and the sidebar entry are hidden.
+    'POST plugin/enabled': async ({ body }) => ({ enabled: runtime.setEnabled(z.object({ enabled: z.boolean() }).parse(await body()).enabled) }),
     'PUT settings/:block': async ({ params, body }) => {
       const block = SettingsBlockSchema.parse(params.block)
       const known = !block.startsWith('source:') || runtime.sources.instances().some(instance => `source:${instance.id}` === block)

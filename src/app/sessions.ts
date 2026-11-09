@@ -6,7 +6,7 @@ import { scopeParentOf } from '@deepseek-ai/dsh-scope'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { dirname } from 'node:path'
 import { z } from 'zod'
-import { key, liveTicket, type Ticket } from '../core/index.ts'
+import { UserError, key, liveTicket, type Ticket } from '../core/index.ts'
 import { mandateInstructions, ticketOfSession } from '../executor/dsh.ts'
 import type { HealthEntry } from '../infra/health.ts'
 import { AgentDelivery, messageId } from './delivery.ts'
@@ -33,6 +33,8 @@ export interface SessionsHost {
   /** Standalone deployment: every person-facing Session routes, so any top-level non-worker Session is a router. */
   readonly standalone: boolean
   readonly lifetime: AbortSignal
+  /** False while the plugin is disabled: a tool call is refused instead of running. */
+  enabled(): boolean
   closing(): boolean
   /** Execution environment variables for `ticket`, rendered into its worker's system prompt. */
   environment(ticket: Ticket): Variable[]
@@ -226,7 +228,11 @@ export class Sessions {
           const image = value && typeof value === 'object' && 'image' in value ? (value as { image: never }).image : undefined
           return image ? [text, { type: 'image' as const, attachment: image }] : [text]
         } },
-        execute: (args, execution) => execute(schema.parse(args), execution.signal) }))
+        execute: (args, execution) => {
+          // Sessions decorated before the plugin was disabled still hold these tools, so the gate sits at the call itself.
+          if (!this.host.enabled()) throw new UserError('pluginDisabled')
+          return execute(schema.parse(args), execution.signal)
+        } }))
     }
   }
   /** Returns `sessionId`'s active model-budget retry state (`{ model_retry }`) for status listings, or `{}` when not waiting on one. */

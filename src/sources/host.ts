@@ -11,6 +11,7 @@ import { fill } from '../infra/text.ts'
 export const HEALTH_TEXT = {
   setupPending: 'Waiting for the deployment check',
   sourceOff: 'Off',
+  pluginOff: 'dsh-superagent is disabled',
   feishuCliUnset: 'The Source is on, and its bot lark-cli is not set',
   feishuBotMissing: 'Waiting for the Feishu bot',
   pollFailures: '{count} consecutive failed polls; last: {error}',
@@ -34,6 +35,8 @@ export interface SourceContext {
   readonly ready: Promise<void>
   /** True once setup resolved the repository and accounts; Sources poll only then. */
   configured(): boolean
+  /** False while the plugin is disabled: a Source polls nothing and starts no consumer. */
+  enabled(): boolean
   /** Setup problem keeping this Source's account from running; only the Feishu bot check reports one. */
   readonly problem?: SetupProblem | undefined
   /** Returns a Source's configuration while enabled, or undefined while disabled or uninstalled. */

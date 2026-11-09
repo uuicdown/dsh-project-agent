@@ -35,6 +35,15 @@ A human follow-up still owned by an Executor is marked **Delivered to Ticket**, 
 
 Ticket details show the originating Trigger, Decision and reason, scope and Policy version. Assignments and secondary details are folded below the immediate actions. **Retry** is available for failed Input delivery or a Ticket waiting for a person after a blocked or failed Report. Ended Tickets show outcomes such as **Pull request merged** or **Stopped by a person**.
 
+## The plugin switch
+
+The plugin's page in the Plugin Manager carries one switch. Turning it off takes effect at once, without a restart: the panel
+and the sidebar's project seat unregister, every tool the plugin registered refuses to run (`pluginDisabled`), Sources stop
+polling and the Feishu consumer stops, and no pass runs, so triggers a Source still offers are not taken in. The page itself
+stays registered, so it is the way back. Turning it on again registers the views and resumes polling on the next pass.
+
+`GET state` carries `enabled`, and `POST plugin/enabled` writes it; the flag lives in the `kv` table, so a restart keeps it.
+The switch is not DSH's bundle-level enable/disable, which unloads the whole plugin and needs a restart.
 ## Settings groups
 
 - **Sources:** one card per Source with its switch, fields and verified account facts. GitHub also offers receive-all switches for new Issues, pull requests, comments and default-branch CI. Polling and read limits are under Advanced.

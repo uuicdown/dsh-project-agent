@@ -33,7 +33,8 @@ export const KV = {
   /** Projects: the named workspaces dispatches belong to, in creation order; `id` and `key` are stable, `name` is renameable. */
   projects: { all: record<ProjectRecord[]>('projects') },
   /** Runtime: the main Session's ID. */
-  runtime: { masterId: record<string>('master-id') },
+  runtime: { masterId: record<string>('master-id'), /** Whether the plugin is enabled: false stops every pass, source poll and tool. */
+    enabled: record<boolean>('runtime-enabled') },
   /** Sessions: prompt revisions each Session has worked under, ordered oldest first; the last entry (`.at(-1)`) is its active revision. */
   sessions: { prompts: family<number[], [session: string]>('session-prompts:') },
   /** Schema 11 migration: legacy main-Session queues imported into the effect table. */

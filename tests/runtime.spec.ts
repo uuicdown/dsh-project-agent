@@ -49,9 +49,11 @@ let guards: Map<string, Guard>
 let restricts: Map<string, unknown[]>
 type HttpHandler = (req: unknown, res: unknown) => Promise<void>
 let http: HttpHandler
-async function api(method: string, path: string): Promise<{ status: number; body: unknown }> {
+async function api(method: string, path: string, body?: string): Promise<{ status: number; body: unknown }> {
   let status = 0, text = ''
-  const req = { method, url: `/orchestrator/api/${path}`, headers: { host: '127.0.0.1:3082', 'x-orchestrator-request': '1' } }
+  const chunks = body === undefined ? [] : [Buffer.from(body)]
+  const req = { method, url: `/orchestrator/api/${path}`, headers: { host: '127.0.0.1:3082', 'x-orchestrator-request': '1' },
+    async *[Symbol.asyncIterator]() { yield* chunks } }
   await http(req, { writeHead: (code: number) => { status = code }, end: (data: string) => { text = data } })
   return { status, body: JSON.parse(text) }
 }
@@ -1555,6 +1557,25 @@ it('reads the main Session\'s preset from a registry with or without presetForSe
   expect(main(route)).toBeUndefined()
   expect(main(watch)).toMatch(/^This shell waits up to 60 seconds by default/)
 })
+
+it('stops every tool, pass and Source while the plugin is disabled, and comes back without a restart', async () => {
+  expect((await api('GET', 'state')).body).toMatchObject({ enabled: true })
+  expect(await api('POST', 'plugin/enabled', '{"enabled":false}')).toMatchObject({ status: 200, body: { enabled: false } })
+  expect((await api('GET', 'state')).body).toMatchObject({ enabled: false })
+  // Sessions decorated before the switch was turned off still hold their tools, so the gate sits at the call itself.
+  await expect(runTool(runtime.masterId, 'orchestrator_read', { resource: 'tickets' })).rejects.toMatchObject({ code: 'pluginDisabled' })
+  // A Source's Trigger is refused before the Engine stores it, so no Eval and no Ticket starts.
+  expect(runtime.receive(feishu('99', '@bot 做点事'))).toBe('filtered')
+  await runtime.idle()
+  expect(runtime.store.read.decisionsOfKinds(['accept', 'ignore', 'unavailable'], 10)).toEqual([])
+  // The flag is stored, so a restart stays disabled until the switch turns it back on.
+  const next = await restart()
+  await next.ready
+  expect(next.enabled).toBe(false)
+  expect(await api('POST', 'plugin/enabled', '{"enabled":true}')).toMatchObject({ status: 200, body: { enabled: true } })
+  expect(await runTool(next.masterId, 'orchestrator_read', { resource: 'tickets' })).toMatchObject({ items: [] })
+})
+
 
 it('refuses an ended ticket\'s worker its tools, and restricts the main Session to the tools it may use', async () => {
   const { ticket, sessionId } = await acceptedTicket()

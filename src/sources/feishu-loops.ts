@@ -46,13 +46,13 @@ async function watch(ctx: SourceContext, signal: AbortSignal): Promise<void> {
   if (!available(ctx)) return
   let retry: number | undefined
   while (!signal.aborted) {
-    if (!enabled(ctx)) {
-      ctx.report('feishu', health('paused', 'sourceOff'))
+    if (!ctx.enabled() || !enabled(ctx)) {
+      ctx.report('feishu', health('paused', ctx.enabled() ? 'sourceOff' : 'pluginOff'))
       await delay(5000, undefined, { signal }).catch(() => {})
       continue
     }
     const running = new AbortController()
-    const check = setInterval(() => { if (!enabled(ctx)) running.abort() }, 5000)
+    const check = setInterval(() => { if (!ctx.enabled() || !enabled(ctx)) running.abort() }, 5000)
     const stop = () => running.abort()
     signal.addEventListener('abort', stop, { once: true })
     const began = Date.now()

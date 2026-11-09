@@ -105,6 +105,8 @@ export interface PanelServer {
   searching?: (query: string) => Promise<void>
   setup: SetupView
   health: Record<string, Health>
+  /** Whether the plugin is enabled, as the switch route writes it. */
+  enabled: boolean
   /** When true, all API requests return an empty 404 to simulate the host plugin being stopped. */
   down: boolean
   /** Count of responses not yet consumed by the client. */
@@ -164,7 +166,7 @@ function sourceStatuses(): SourceStatusRow[] {
 }
 const stateView = (): StateView => ({
   setup: server.setup, load: { running: server.setup.problem ? 0 : 2, queued: 0, maxWorkers: server.settings.executor.maxWorkers },
-  masterId: 'master', paused: server.settings.paused,
+  masterId: 'master', paused: server.settings.paused, enabled: server.enabled,
   // The panel does not read health; the service script does.
   health: {},
 })
@@ -252,7 +254,7 @@ function initial(): PanelServer {
     en: 'Feishu message' } }
   const defaults = { revision: 0, previousRevision: null, savedAt: '', source: 'defaults' }
   return {
-    health: {}, down: false, pending: 0, opened: [], requests: [], misuse: [], queued: new Set(), dropped: [], failing: [],
+    enabled: true, health: {}, down: false, pending: 0, opened: [], requests: [], misuse: [], queued: new Set(), dropped: [], failing: [],
     setup: { machine: MACHINE, problem: null, feishuProblem: null,
       accounts: { repository: 'acme/widgets', agent: 'agent-bot', feishu: { appId: 'cli_bot', brand: 'feishu', botId: 'ou_bot',
         name: 'Widgets Bot' } } },
@@ -350,6 +352,7 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     server.tickets.open = []; server.person = server.person.filter(ticket => ticket.id !== params.id)
     return { stopped: true }
   } },
+  'POST plugin/enabled': { body: true, answer: ({ body }) => { server.enabled = body.enabled; return { enabled: body.enabled } } },
   'POST executor/pause': { body: true, answer: ({ body }) => {
     server.settings = { ...server.settings, paused: body.paused }
     server.revisions.pause = (server.revisions.pause ?? 0) + 1
