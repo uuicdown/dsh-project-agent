@@ -107,9 +107,13 @@ const workerAgent = (ticketId: string) => vi.waitFor(() => {
   const id = `worker-${ticketId}`
   const agent = host.agents.get(id)
   if (agent) return agent
-  const report = host.runtime.store.tickets.get(ticketId)?.assignments.at(-1)?.report
-  throw new Error(`${id} never opened; agents=${[...host.agents.keys()].join(', ') || '(none)'}; assignment report=${JSON.stringify(report ?? null)}`)
-}, { timeout: 5000, interval: 10 })
+  const assignment = host.runtime.store.tickets.get(ticketId)?.assignments.at(-1)
+  const effects = host.runtime.store.db.prepare('SELECT kind, key, attempts, due, error FROM effect ORDER BY seq').all()
+  const settings = host.runtime.store.settings()
+  throw new Error(`${id} never opened; agents=${[...host.agents.keys()].join(', ') || '(none)'}`
+    + `; assignment=${assignment?.state}/${JSON.stringify(assignment?.report ?? null)}; effects=${JSON.stringify(effects)}`
+    + `; prepare=${JSON.stringify(settings.executor.prepare)}; paused=${String(settings.paused)}`)
+}, { timeout: 3000, interval: 250 })
 
 it('groups a dispatch into its named project, shows the project on ticket rows, and renames it over the management API', async () => {
   const header = (host.agents.get(host.runtime.masterId) as unknown as { session: { header: Record<string, unknown> } }).session.header
