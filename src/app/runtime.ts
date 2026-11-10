@@ -20,7 +20,7 @@ import { Commands } from '../infra/commands.ts'
 import type { Deployment, Machine } from '../deployment.ts'
 import { environmentOf, ticketEnvironment, type Variable } from './execution-environment.ts'
 import type { SetupProblem } from '../setup.ts'
-import { DshExecutor, sourceTrigger, ticketOfSession, triggerMessage, workerSessionId } from '../executor/dsh.ts'
+import { DshExecutor, sessionOf, sourceTrigger, triggerMessage } from '../executor/dsh.ts'
 import { ensureProject, isRouterSession, listProjects, routerSessionId, routerTitle, type ProjectRecord } from './projects.ts'
 import { sameDirectory } from '../infra/environment.ts'
 import { ticketCard } from './cards.ts'
@@ -270,7 +270,7 @@ export class Runtime extends Service implements SourceHost {
   private async adopt(agent: Agent): Promise<void> {
     const id = agent.id
     if (!this.machine.standalone || id === this.masterId || isRouterSession(id)) return
-    if (ticketOfSession(id) !== undefined || agent.session.header.parentSession !== undefined) return
+    if (this.sessions.ownerOf(id) !== undefined || agent.session.header.parentSession !== undefined) return
     const directory = this.sessionDirectory(agent)
     if (directory === undefined || directory === '' || sameDirectory(directory, this.machine.stateDir)) return
     await this.ensureProjectRouter(ensureProject(this.store, directory))
@@ -333,7 +333,7 @@ export class Runtime extends Service implements SourceHost {
     try {
       this.assessor.stop()
       const ids = [this.masterId, ...listProjects(this.store).map(project => routerSessionId(project.id)),
-        ...this.store.tickets.list().map(ticket => workerSessionId(ticket.id))]
+        ...this.store.tickets.list().map(ticket => sessionOf(ticket))]
       const agents = ids.map(id => this.ctx.agents.get(id as SessionId)).filter((agent): agent is Agent => agent !== undefined)
       for (const agent of agents) agent.cancel({ kind: 'user' }, { keepInbox: true })
       await Promise.allSettled([passes, this.effects.drain(), ...agents.map(agent => agent.whenIdle())])

@@ -151,6 +151,61 @@ it('shows what a dispatch chose, and starts each new worker with the project\'s 
   expect(stored.execution?.assignment).toContain('Draft the readme')
 })
 
+it('continues an earlier dispatch in its Session when the router judges the request follows on', async () => {
+  const header = (host.agents.get(host.runtime.masterId) as unknown as { session: { header: Record<string, unknown> } }).session.header
+  header.cwd = '/w/default-workspace'
+  const first = await host.runTool(host.runtime.masterId, 'project_dispatch',
+    { project: 'dsh-spinner-words', title: 'Draft the readme', task: 'Draft the readme' })
+  await host.runtime.idle()
+  const firstId = (first.ticket as { ticket_id: string }).ticket_id
+  const sessionId = `worker-${firstId}`
+  // The worker handed off: its turn ended, so its Session is idle between turns.
+  const worker = host.agents.get(sessionId) as unknown as { status: string }
+  worker.status = 'idle'
+  host.ctx.emit('agent/status', { agent: worker, status: 'idle' } as never)
+  await host.runtime.idle()
+  const second = await host.runTool(host.runtime.masterId, 'project_dispatch',
+    { project: 'dsh-spinner-words', title: 'Add the install note', task: 'Add the install note', continue_ticket: firstId })
+  await host.runtime.idle()
+  const secondId = (second.ticket as { ticket_id: string }).ticket_id
+  // The dispatch continues the earlier Session, and says which earlier dispatch it continues.
+  expect(second.dispatch).toMatchObject({ session: sessionId, continued_from: firstId })
+  expect(host.runtime.store.tickets.get(secondId)).toMatchObject({ session: sessionId, continuedFrom: firstId })
+  expect(host.agents.has(`worker-${secondId}`)).toBe(false)
+  // The one Session now speaks for the second ticket: its report lands on it, not on the dispatch it continues.
+  await host.runTool(sessionId, 'orchestrator_report', { state: 'ready', summary: 'Install note added' })
+  await host.runtime.idle()
+  expect(host.runtime.store.tickets.get(secondId)!.assignments.at(-1)!.report).toMatchObject({ summary: 'Install note added' })
+  expect(host.runtime.store.tickets.get(firstId)!.assignments.at(-1)!.report?.summary).not.toBe('Install note added')
+  // A request about different work starts a Session of its own, with the project briefing instead of the conversation.
+  const third = await host.runTool(host.runtime.masterId, 'project_dispatch',
+    { project: 'dsh-spinner-words', title: 'Ship the release', task: 'Ship the release' })
+  await host.runtime.idle()
+  const thirdId = (third.ticket as { ticket_id: string }).ticket_id
+  expect(third.dispatch).toMatchObject({ session: `worker-${thirdId}` })
+  expect((third.dispatch as Record<string, unknown>).continued_from).toBeUndefined()
+  expect(host.agents.has(`worker-${thirdId}`)).toBe(true)
+})
+
+it('refuses to continue a Session whose worker still runs, and an earlier dispatch of another project', async () => {
+  const header = (host.agents.get(host.runtime.masterId) as unknown as { session: { header: Record<string, unknown> } }).session.header
+  header.cwd = '/w/default-workspace'
+  const first = await host.runTool(host.runtime.masterId, 'project_dispatch',
+    { project: 'dsh-spinner-words', title: 'Draft the readme', task: 'Draft the readme' })
+  await host.runtime.idle()
+  const firstId = (first.ticket as { ticket_id: string }).ticket_id
+  // Its worker is running: the Session is no place for another ticket until it hands off.
+  expect((host.agents.get(`worker-${firstId}`) as unknown as { status: string }).status).toBe('running')
+  await expect(host.runTool(host.runtime.masterId, 'project_dispatch',
+    { project: 'dsh-spinner-words', title: 'Add the note', task: 'Add the note', continue_ticket: firstId }))
+    .rejects.toThrow(/running/)
+  // Another project's dispatch cannot take this project's Session.
+  header.cwd = '/w/other'
+  await expect(host.runTool(host.runtime.masterId, 'project_dispatch',
+    { project: 'other-project', title: 'Other work', task: 'Other work', continue_ticket: firstId }))
+    .rejects.toThrow(/this project/)
+})
+
 it('delivers a worker report to the Session that dispatched the ticket', async () => {
   const chat = 'chat-other'
   await host.controller.create({ sessionId: chat })

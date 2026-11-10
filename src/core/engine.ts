@@ -104,12 +104,13 @@ export class Engine {
    * `dispatcher` records the main Session that dispatched it, whose conversation receives its reports and notices.
    */
   dispatch(request: { project: string; projectId?: string; title: string; text: string; name: string; directory?: string; skills?: readonly string[]
-    model?: TicketModel; dispatcher?: string }): Ticket {
+    model?: TicketModel; dispatcher?: string; session?: string; continuedFrom?: string }): Ticket {
     return this.repo.atomic(() => {
       const at = new Date().toISOString()
       const id = `dispatch-${at}-${Math.random().toString(36).slice(2, 8)}`
       return this.tickets.createDirect(id, request.title, request.title, request.text, { source: 'project', id: 'user' }, at,
-        { skills: request.skills, model: request.model, directory: request.directory, projectId: request.projectId, dispatcher: request.dispatcher })
+        { skills: request.skills, model: request.model, directory: request.directory, projectId: request.projectId, dispatcher: request.dispatcher,
+          session: request.session, continuedFrom: request.continuedFrom })
     })
   }
   /**

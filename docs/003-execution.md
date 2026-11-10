@@ -22,7 +22,7 @@ An `idle` Ticket has finished its turn without an outstanding question. A Trigge
 
 ## The Executor
 
-Each Ticket gets an Executor Session named `worker-<ticket id>` and a directory named after the Ticket's short name. Directories are created under the configured execution root, which defaults to `<stateDir>/work`.
+Each Ticket gets an Executor Session named `worker-<ticket id>` and a directory named after the Ticket's short name. A dispatch that continues an earlier dispatch runs in that dispatch's Session instead, keeping the conversation it began; its directory is still the project's. Directories are created under the configured execution root, which defaults to `<stateDir>/work`.
 
 Executor Sessions run commands without approval as the operator's OS user. Their `dsh-superagent-worker` preset contains the tools needed for work and moves foreground shell commands to background jobs after 5 seconds. This lets a worker receive new messages at the next step instead of waiting for a long command to finish.
 
@@ -30,7 +30,9 @@ The background main Session and every project's Router Session use `dsh-superage
 
 ### Dispatched tickets
 
-A project dispatch creates a Ticket without a Source, so it has no Channel to answer into. Each dispatch still gets its own Ticket and Executor Session, which keeps every request's Mandate and tool limits separate; a new dispatch starts its worker with a briefing of the project's earlier dispatches, so it continues from them instead of from nothing.
+A project dispatch creates a Ticket without a Source, so it has no Channel to answer into. Each dispatch gets its own Ticket, which keeps every request's Mandate and tool limits separate.
+
+When the Router judges that a request follows on from an earlier dispatch of the same project, it passes that dispatch's ticket id as `continue_ticket`: the new Ticket runs in that dispatch's Executor Session, in the conversation that already holds the project's work, and records `continuedFrom`. A Session works for one Ticket at a time. A dispatch may continue it only while its worker is idle between turns; a Ticket that receives an Input while the Session serves another waits for its turn, and the Session's prompt and tools then speak for the Ticket it takes up. A request about different work starts its own Session, which begins with a briefing of the project's earlier dispatches, so it continues from them instead of from nothing.
 
 A dispatched Ticket records `dispatcher`, the Session that dispatched it: usually its project's Router Session. Its reports and its end notice go there rather than to a background Session, so the person who asked reads the result in the conversation they asked in; a person's follow-up that reaches a Ticket goes to the same Session. With no Channel, that conversation is where the result is delivered, and the router answers a report itself instead of calling `orchestrator_reply`.
 

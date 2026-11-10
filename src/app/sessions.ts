@@ -7,7 +7,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session'
 import { dirname } from 'node:path'
 import { z } from 'zod'
 import { UserError, key, liveTicket, type Ticket } from '../core/index.ts'
-import { mandateInstructions, ticketOfSession } from '../executor/dsh.ts'
+import { mandateInstructions, ticketIdOfSession } from '../executor/dsh.ts'
 import type { HealthEntry } from '../infra/health.ts'
 import { AgentDelivery, messageId } from './delivery.ts'
 import type { Effects } from './effects.ts'
@@ -130,7 +130,7 @@ export class Sessions {
     // its first turn DSH refuses any selection, which leaves it as it is.
     ctx.inject(['agentPresets'], child => {
       child.on('agent-preset/selected', (sessionId, preset) => {
-        const ticketId = ticketOfSession(sessionId), agent = ctx.agents.get(sessionId as SessionId)
+        const ticketId = this.ownerOf(sessionId), agent = ctx.agents.get(sessionId as SessionId)
         // Only the Sessions the plugin routes are router Sessions: the master, a project's Router Session, and one an earlier
         // version already turned into the router, which keeps working instead of being stranded under a preset without work
         // tools. A Session a person opens now keeps the preset they opened it with.
@@ -161,7 +161,7 @@ export class Sessions {
     if ('error' in result) throw result.error
     const settings = this.host.store.settings()
     // A ticket may name its own model route; otherwise the configured worker role model applies.
-    const ticketId = role === 'worker' ? ticketOfSession(id) : undefined
+    const ticketId = role === 'worker' ? this.ownerOf(id) : undefined
     const ticketModel = ticketId === undefined ? undefined : this.host.store.tickets.get(ticketId)?.model
     await initializeRoleModel(ctx, result.agent, role === 'orchestrator' ? settings.eval.model : (ticketModel ?? settings.executor.model))
     await this.decorate(result.agent)
@@ -173,6 +173,31 @@ export class Sessions {
   async holds(sessionId: string, requestId: string): Promise<boolean> {
     const result = await this.ctx.sessionController.resolveAgent(sessionId as SessionId)
     return !('error' in result) && await this.agentDelivery.holds(result.agent, key(requestId))
+  }
+  /**
+   * The ticket a worker Session currently works for: the one it took up after a dispatch continued its Session, or the one
+   * its id names (`worker-<ticket id>`). Undefined for a Session that is not a worker's, or whose ticket is gone.
+   */
+  ownerOf(sessionId: string): string | undefined {
+    const named = this.host.store.get(KV.sessions.ticket(sessionId)) ?? ticketIdOfSession(sessionId)
+    return named !== undefined && this.host.store.tickets.get(named) !== undefined ? named : undefined
+  }
+  /**
+   * Makes `ticketId` the ticket a worker Session works for, so its prompt and tools speak for that ticket: a dispatch that
+   * continues an earlier Session keeps one conversation across tickets. Returns false while the Session is busy with another
+   * ticket, which must hand off first.
+   */
+  async claim(sessionId: string, ticketId: string): Promise<boolean> {
+    if (this.ownerOf(sessionId) === ticketId) return true
+    const agent = this.ctx.agents.get(sessionId as SessionId)
+    if (agent !== undefined && agent.status !== 'idle') return false
+    this.host.store.set(KV.sessions.ticket(sessionId), ticketId)
+    if (agent !== undefined) {
+      // What this Session registered speaks for the ticket it worked for before: register it afresh for the ticket it takes up.
+      this.release(agent)
+      await this.decorate(agent)
+    }
+    return true
   }
   /** Deliver a message once per request id: to the next turn, the current one, or `inject`ed with its label without waking the agent. */
   async prompt(sessionId: string, requestId: string, text: string, mode: 'queue' | 'steer' | { inject: string }, authorize?: () => void,
@@ -270,7 +295,7 @@ export class Sessions {
       : { state: 'ready', detail: 'No managed Session is waiting on a model budget retry' })
   }
   private ticketOf(agent: Agent): Ticket | undefined {
-    const ticketId = ticketOfSession(agent.id)
+    const ticketId = this.ownerOf(agent.id)
     return ticketId === undefined ? undefined : this.host.store.tickets.get(ticketId)
   }
   private async decorate(agent: Agent): Promise<void> {
@@ -385,10 +410,10 @@ export class Sessions {
   private limitSubagent(agent: Agent): void {
     let parent = agent.session.header.parentSession
     // Up the subagents' parents to the worker, which are loaded while their subagents run.
-    for (let depth = 0; parent !== undefined && ticketOfSession(parent) === undefined && depth < 8; depth++) {
+    for (let depth = 0; parent !== undefined && this.ownerOf(parent) === undefined && depth < 8; depth++) {
       parent = this.ctx.agents.get(parent)?.session.header.parentSession
     }
-    const ticketId = parent === undefined ? undefined : ticketOfSession(parent)
+    const ticketId = parent === undefined ? undefined : this.ownerOf(parent)
     if (ticketId === undefined || !this.host.store.tickets.get(ticketId)) return
     this.bindings.set(agent, { disposers: this.workOnly(agent, ticketId), subagent: true })
   }

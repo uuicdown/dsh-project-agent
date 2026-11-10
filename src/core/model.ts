@@ -288,6 +288,17 @@ export interface Ticket {
    * Source-accepted ticket, whose reports go to the main Session that owns the Source.
    */
   dispatcher?: string
+  /**
+   * The Executor Session this ticket's worker runs in when the dispatch continues an earlier one, such as `worker-<earlier
+   * ticket id>`; absent when the ticket has a Session of its own, named `worker-<this id>`. A reused Session runs the work
+   * of one ticket at a time and speaks for the ticket it currently works for.
+   */
+  session?: string
+  /**
+   * The earlier dispatch whose Executor Session this ticket continues, when the router judged the request to follow on from
+   * that work. It records the continuity; the earlier ticket keeps its own state, and its reports are unchanged.
+   */
+  continuedFrom?: string
   /** Model route this ticket's worker runs under; undefined uses the configured worker role model. */
   model?: TicketModel
   decisionId: string

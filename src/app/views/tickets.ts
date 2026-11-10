@@ -1,7 +1,7 @@
 /** Ticket list, ticket detail, mandate basis formatting, and executor load views. */
 import { liveTicket, threadKey, ticketStage, type AcceptMode, type AdmissionCell, type MandateBasis, type Ticket,
   type TicketStage } from '../../core/index.ts'
-import { workerSessionId } from '../../executor/dsh.ts'
+import { sessionOf } from '../../executor/dsh.ts'
 import { listProjects } from '../projects.ts'
 import type { Store } from '../store.ts'
 import { channelLink, decisionView, newestFirst, page, snapshot, threadSummary, ticketLine, type Snapshot,
@@ -80,11 +80,14 @@ export function ticketDetail(host: ViewHost, id: string) {
     channels: ticket.channels.map(channel => channelLink(view, channel)),
     decision: decision ? decisionView(view, decision) : undefined,
     // An empty skill list allows every installed skill, which the panel states rather than showing nothing.
-    ...dispatched ? { dispatch: { project: project?.name ?? ticket.projectId ?? '', session: workerSessionId(ticket.id),
+    // A dispatch that continues an earlier one runs in that dispatch's worker Session and says which one it continues.
+    ...dispatched ? { dispatch: { project: project?.name ?? ticket.projectId ?? '', session: sessionOf(ticket),
+      ...ticket.continuedFrom ? { continuedFrom: ticket.continuedFrom } : {},
       skills: [...ticket.skills ?? []], skillsUnrestricted: !ticket.skills?.length, ...ticket.model ? { model: ticket.model } : {},
       ...ticket.dispatcher ? { dispatcher: ticket.dispatcher } : {} } } : {},
-    // Every started Assignment ran in the ticket's one worker Session. A running assignment whose worker reported a non-progress state has finished its turn unless a human response resumed the ticket.
-    assignments: ticket.assignments.map(assignment => ({ ...assignment, ...assignment.startedAt ? { ref: workerSessionId(ticket.id) } : {},
+    // Every started Assignment ran in the ticket's worker Session, which a dispatch may share with the one it continues. A
+    // running assignment whose worker reported a non-progress state has finished its turn unless a human response resumed the ticket.
+    assignments: ticket.assignments.map(assignment => ({ ...assignment, ...assignment.startedAt ? { ref: sessionOf(ticket) } : {},
       ...assignment.state === 'running' && assignment.report && assignment.report.state !== 'progress' && stage !== 'working'
         ? { turnEndedAt: assignment.report.at } : {} })),
     inputs: ticket.inputs.slice().reverse().map(input),
