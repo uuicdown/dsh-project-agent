@@ -19,6 +19,17 @@ export const automatic = (input: TicketInput | undefined): boolean => input?.kin
 const readBefore = (input: Extract<TicketInput, { kind: 'trigger' }>, until: string): boolean => input.readAt === undefined
   ? (input.deliveredAt && input.deliveredAt > input.at ? input.deliveredAt : input.at) <= until : !!input.readAt && input.readAt < until
 const STATUS_REQUEST = 'Report the current ticket status with orchestrator_report. This is a status-only request: do not resume implementation or perform external actions.'
+/**
+ * What a dispatch chose for its ticket beyond the request itself: the skills its worker may use, its model route, the
+ * directory it runs in, the project it belongs to, and the main Session that dispatched it.
+ */
+export interface DispatchOptions {
+  skills?: readonly string[]
+  model?: TicketModel
+  directory?: string
+  projectId?: string
+  dispatcher?: string
+}
 
 /**
  * Manages each ticket's lifecycle: creates the ticket for an accept decision with its Mandate, Subscriptions, and first
@@ -59,12 +70,12 @@ export class Tickets extends EnginePart {
    * Mandate is explicit for `actor`, `scope` bounds it, and the first Assignment starts at once. No Trigger or Thread is
    * involved; the ticket's origin names the dispatch itself.
    */
-  createDirect(id: string, title: string, scope: string, task: string, actor: ActorRef, at: string, skills?: readonly string[], model?: TicketModel,
-    directory?: string, projectId?: string): Ticket {
+  createDirect(id: string, title: string, scope: string, task: string, actor: ActorRef, at: string, options: DispatchOptions = {}): Ticket {
+    const { skills, model, directory, projectId, dispatcher } = options
     const mandate: Mandate = { strength: 'explicit', policyVersion: 'dispatch', basis: { via: 'listed', addressed: 'direct' }, actor, scope }
     const draft: Ticket = { id, title, decisionId: id, mandate, channels: [], assignments: [], inputs: [], undelivered: [],
       createdAt: at, updatedAt: at, origin: { triggerId: id, triggerIds: [] }, ...(skills?.length ? { skills } : {}), ...(model ? { model } : {}),
-      ...(projectId ? { projectId } : {}) }
+      ...(projectId ? { projectId } : {}), ...(dispatcher ? { dispatcher } : {}) }
     // The Executor's prepare assigns the workspace directory; the dispatch carries its own assignment text instead of a trigger.
     const prepared = this.options.prepareTicket?.(draft, { kind: 'accept', title, scope, name: 'task', reason: { code: 'explicitRouted' } })
     const execution = prepared?.execution === undefined ? undefined : {

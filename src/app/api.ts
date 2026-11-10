@@ -1,6 +1,6 @@
 /** Type-only management API contract between the web panel and host routes, imported by the panel without bundling host code. */
 import type { ModelCatalog } from '@deepseek-ai/dsh-api-session-controller/types'
-import type { ProjectListView, ProjectRecord } from './projects.ts'
+import type { ProjectListView, ProjectView } from './projects.ts'
 import type { PromptConfig, Prompts } from './prompts.ts'
 import type { PromptsView, StateView, TicketPageView } from './http.ts'
 import type { HistoryView } from './settings-history.ts'
@@ -23,7 +23,7 @@ export interface Api {
   'GET overview': { response: OverviewView }
   'GET search': { query: { q: string }; response: SearchView }
   'GET projects': { response: ProjectListView }
-  'PATCH projects/:id': { body: { name: string }; response: ProjectRecord }
+  'PATCH projects/:id': { body: { name: string }; response: ProjectView }
   'GET sources': { response: SourceStatusView[] }
   'GET settings': { response: SettingsView }
   'POST sources/:id/labels': { response: { added: string[] } }

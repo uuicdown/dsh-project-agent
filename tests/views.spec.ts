@@ -299,6 +299,23 @@ it('offers a person to send a follow-up to Eval while a ticket decides it, or on
   expect(row()).toMatchObject({ actions: { requeue: false }, disposition: { queued: true } })
 })
 
+it('shows the dispatch a ticket came from: its project, the skills it may use, its model route and its dispatcher', () => {
+  const host = views()
+  store.set(KV.projects.all, [{ id: 'project-0123456789ab', key: 'dsh', name: '旋转词', path: '/w/dsh', createdAt: at }])
+  const dispatched = { id: 't1', title: 'Draft the notice', decisionId: 't1', channels: [], undelivered: [], createdAt: at, updatedAt: at,
+    mandate: { strength: 'explicit' as const, policyVersion: 'dispatch', basis: { via: 'listed' as const, addressed: 'direct' as const },
+      actor: { source: 'project', id: 'user' }, scope: 'Draft the notice' },
+    origin: { triggerId: 't1', triggerIds: [] }, assignments: [{ id: 'a1', state: 'running' as const, createdAt: at, startedAt: at }],
+    inputs: [] as never[], projectId: 'project-0123456789ab', skills: ['gongwen', 'office'], dispatcher: 'orchestrator-chat',
+    model: { provider: 'deepseek', model: 'deepseek-v4' } }
+  store.tickets.save(dispatched)
+  expect(ticketDetail(host, 't1')!.dispatch).toEqual({ project: '旋转词', session: 'worker-t1', skills: ['gongwen', 'office'],
+    skillsUnrestricted: false, dispatcher: 'orchestrator-chat', model: { provider: 'deepseek', model: 'deepseek-v4' } })
+  // An unrestricted ticket says so rather than looking like it got no skills at all.
+  store.tickets.save({ ...dispatched, skills: undefined })
+  expect(ticketDetail(host, 't1')!.dispatch).toMatchObject({ skills: [], skillsUnrestricted: true })
+})
+
 it('reads each ticket a page\'s follow-ups reached once, and nothing for a message no ticket can decide', () => {
   const host = views()
   live('t1')

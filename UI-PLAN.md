@@ -2,16 +2,21 @@
 
 > 决策（2026-11-07）：层级用 H1 —— 项目 > 主会话 > 子会话；工作区降为路径属性。
 > 子会话按状态排序：待回答 > 失败/受阻 > 进行中 > 完成。
+>
+> 决策（2026-11-09）：**不再接管普通会话**。用户手动新开的会话保持标准模式（不换 preset、不给插件工具），
+> 项目由插件自动开一个专属 **Router 会话**（`router-<projectId>`，标题 `Router · <项目名>`，目录 = 项目目录）；
+> 侧栏三层 项目 → Router 会话 → 子会话（worker），**子会话默认折叠**。项目行展开显示 Router 会话。
+> 升级前已被插件接管（已是 router preset）的老会话继续作为 Router 工作，不会被丢下。
 
 ## 侧栏结构
 
 ```
-▾ <项目名>                          [项目行]
-   ● 主会话 · 调度台          N 单    [主会话行，置顶]
-     ├ ◦ <工单标题>  状态点  [子会话行，缩进]
-     ├ ◦ ...
-     └ ◦ ...
-   ▸ 未派单的会话                    [原生浏览器接管]
+▾ <项目名>                          [项目行，默认展开]
+     ● Router 会话            主     [Router 会话行，点开即进入该项目的会话]
+       ▸ 子会话 3                   [默认折叠；点开列出 worker]
+         ◦ <工单标题>  状态点       [子会话行，点开进入 worker Session]
+   未归属                            [不属于任何项目的工单，直接列出]
+     ◦ ...
 ```
 
 ## 视觉规则
@@ -36,24 +41,24 @@
 
 ## 数据需求
 
-`/orchestrator/api/state` 需要新增（或提供新端点）：
+`GET /orchestrator/api/projects` 每项带上该项目的 Router 会话 id（由项目 id 推出，不另存记录）；
+`GET /orchestrator/api/tickets` 的每行已有 `sessionId`（worker 会话）与 `projectId`，侧栏据此组装三层。
 
 ```json
 {
-  "projects": [
+  "items": [
     {
-      "id": "p_xxx",
+      "id": "project-…",
       "name": "dsh 插件开发",
-      "mainSessionId": "orchestrator-…",
+      "path": "C:\\…\\default-workspace",
+      "sessionId": "router-project-…",
       "tickets": [
         {
           "id": "dispatch-…",
           "title": "凭据迁移",
           "stage": "working",
-          "workerSessionId": "worker-dispatch-…",
-          "skills": ["gongwen"],
-          "model": { "provider": "deepseek-account", "model": "deepseek-flash" },
-          "updatedAt": "2026-11-07T…"
+          "sessionId": "worker-dispatch-…",
+          "skills": ["gongwen"]
         }
       ]
     }
@@ -63,15 +68,17 @@
 
 ## 实现步骤
 
-1. **Host 侧**：`src/app/http.ts` 的 state 路由补 `tickets`（目前只有 setup/load/masterId/paused/health）；字段来自 `store.tickets.open()` + `ticketStage`。
-2. **Worker 目录隔离**：ticket 目录固定在 `stateDir/work/<ticket>`；侧栏隐藏这类 workspace（或在 client 侧过滤 `--…-projtest-state--` 之外的工单目录）。
-3. **Client 侧**：`src/client/index.tsx` 增加 `ctx.slots.inject('sidebar.projects', …)` 注册，渲染上面的树；复用 `provider.tsx` 的轮询与 `marks.ts` 的状态映射。
-4. **排序**：客户端按 stage 权重排序，同权重按 `updatedAt`。
-5. **原生浏览器**：只保留「未派单的会话」，即不属于任何 ticket 的会话。
+1. **Host 侧**：`src/app/projects.ts` 提供 `routerSessionId` / `isRouterSession` / `routerTitle` / `projectView` / `projectByPath`。
+2. **会话归属**：`src/app/sessions.ts` 只装饰插件自己打开的会话（master 与 `router-*`）；普通会话不再被接管。
+3. **自动创建**：`src/app/runtime.ts` 在用户新开项目会话时（`agent/created`，standalone）为该项目开 Router 会话；
+   启动时为已有项目补齐；`project_dispatch` 也会补齐。
+4. **Client 侧**：`src/client/projects-sidebar.tsx` 渲染三层树，子会话默认折叠；点行进入对应 Session。
+5. **排序**：客户端按 stage 权重排序。
 
 ## 验收
 
-- 侧栏出现「项目 > 主会话 > 子会话」三层，主会话带「主」徽标。
+- 用户手动新开的会话保持标准 preset，插件不给它加工具或提示词。
+- 每个项目有且只有一个 Router 会话，标题 `Router · <项目名>`，改项目名后标题跟着改。
+- 侧栏出现「项目 > Router 会话 > 子会话」三层，子会话默认折叠，点开才列出 worker。
 - 派单后子会话立即出现，状态点随 report 变化。
-- 子会话不出现在工作区分组里。
 - 待回答的工单排在最前。

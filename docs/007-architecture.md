@@ -30,7 +30,7 @@ flowchart TB
 
 `Runtime` is the composition root; it contains no domain rules. Its constructor locks the state directory, opens the Store and builds each component. If construction fails, it closes the Store and releases the lock.
 
-Startup registers management routes and runs Setup. After setup resolves, it installs Session and Executor hooks, ensures the main Session exists, starts Policy syncs, resumes interrupted Assignments, and starts passes and effects. `ready` marks completion of startup.
+Startup registers management routes and runs Setup. After setup resolves, it installs Session and Executor hooks, ensures the background main Session exists, opens each existing project's Router Session, starts Policy syncs, resumes interrupted Assignments, and starts passes and effects. `ready` marks completion of startup. A later `agent/created` for a Session a person opened in a workspace opens that project's Router Session, off the event, instead of turning their Session into one.
 
 Shutdown cancels turns, waits for passes, effects and agents, restores the process environment, closes the Store and releases the lock. Source plugins inject Runtime as the `orchestrator` service through the narrow `SourceHost` interface.
 
@@ -174,8 +174,8 @@ Failures retry with exponential backoff. Throwing `Later` defers work without co
 | `assessment` | MasterAssessor | Steers an Eval's candidate card into the main Session's turn, then tells the Engine it was delivered, which starts the Eval's deadline | 4, none while paused | 2 s doubling to 60 s |
 | `launch` | DshExecutor | Launches a pending Assignment: prepare command, Executor Session, assignment message | The free worker slots, none while paused | A passing failure of the model provider or the network runs again after 5 s doubling to 300 s, three times; any other failure, and a failed prepare command, fails its Ticket. One held by a pause or by full worker slots tries again after 5 s |
 | `delivery` | DshExecutor | Hands a Ticket's waiting Inputs to its running Assignment, in order | 4, none while paused | 2 s doubling to 60 s; one that waits for a worker slot tries again after 2 s |
-| `relay` | Sessions | Steers a worker's report or question, or a person's follow-up, into the main Session's turn | 1, in queue order | 2 s doubling to 60 s |
-| `notice` | Sessions | Injects a notice into the main Session without waking it | 1, in queue order | 2 s doubling to 60 s |
+| `relay` | Sessions | Steers a worker's report or question, or a person's follow-up, into the dispatching Session's turn, or the background main Session's when no dispatcher is recorded | 1, in queue order | 2 s doubling to 60 s |
+| `notice` | Sessions | Injects a notice into the background main Session, or the Session a ticket was dispatched from, without waking it | 1, in queue order | 2 s doubling to 60 s |
 | `reply` | Outbox | Sends a message for a Channel through its Source, after the earlier messages of its Ticket to its conversation that have not failed three times; withdrawing the message cancels it | 1, none while paused | 5 s doubling to 300 s; one whose Source is off, or behind an earlier message, tries again after 5 s |
 
 Each kind has a health entry under its name. It reports an error once one of its effects failed three times in a row, except `delivery`, whose failures show on their Ticket instead. Relays keep their order, and so do notices; a failed one holds back the later ones of its kind.
@@ -234,7 +234,7 @@ Validation inherits an omitted base from the saved override, drops removed parts
 
 `Sessions` (`src/app/sessions.ts`) manages DeepSeek Harness Sessions for both roles. `ensure` creates a Session with its role's model. `install` follows agent events and registers prompts, skills and tools for managed Sessions.
 
-`prompt` delivers once per request id. `relay` and `notify` enqueue main-Session messages handled by the `relay` and `notice` effects. `src/app/notices.ts` defines their content; `delivery` checks whether a message arrived.
+`prompt` delivers once per request id. `relay` and `notify` enqueue messages to the main Session, or to the Session that dispatched a ticket, handled by the `relay` and `notice` effects; `src/app/notices.ts` defines their content; `delivery` checks whether a message arrived.
 
 Each model request binds the Session to the current prompt revision. The revisions it used are stored durably: `promptVersion` identifies the active one and `mayRead` restricts which versions a worker can inspect. Registrations are tracked in one map per agent.
 
@@ -248,7 +248,7 @@ Each model request binds the Session to the current prompt revision. The revisio
 | `src/app/notices.ts` | Domain events and worker reports into notices and relays for the main Session |
 | `src/app/tools/main.ts`, `src/app/tools/executor.ts` | Tool arguments of the main Session and the Executor Sessions into calls of the core classes, and their results into cards |
 | `src/app/http.ts`, `src/app/views/`, `src/app/api.ts` | HTTP requests into calls, and Store reads into the panel's views; `api.ts` types every route for the panel |
-| `src/app/projects.ts` | Dispatches into named project records: `ensureProject` creates one on its first dispatch and records the workspace, `renameProject` changes the display name alone, and `listProjects` serves the sidebar and the panel from one KV record |
+| `src/app/projects.ts` | Dispatches and the Sessions people open into named project records: `ensureProject` creates one on its first dispatch or on a workspace's first Session, `projectByPath` finds the project a directory already has, `renameProject` changes the display name alone, `routerSessionId`, `routerTitle` and `projectView` give each project the Router Session it owns, and `listProjects` serves the sidebar and the panel from one KV record |
 | `src/app/resources.ts`, `src/app/links.ts`, `src/app/cards.ts` | Resource names into reads, source messages into links, records into compact cards for models |
 | `src/sources/github*.ts`, `src/sources/feishu*.ts`, `src/sources/poll.ts` | GitHub and Feishu payloads into Triggers and Thread facts, and messages into CLI calls |
 | `src/deployment.ts`, `src/setup.ts`, `src/infra/` | Setup probes and problems, CLI transport, the agent's process environment |
@@ -328,7 +328,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/settings.ts` | Settings |
 | `src/app/settings-history.ts` | `policyHistory`: each saved settings revision with what it changed from the one before |
 | `src/app/prompts.ts` | Prompts, `builtInParts`, the built-in parts a team may override, and `promptParts`, the order of a role's prompt sections |
-| `src/app/projects.ts` | Project records in one `kv` array: `ensureProject` creates one on its first dispatch and records the workspace, `renameProject` changes the display name alone, and `listProjects` and `projectByName` serve the sidebar, the panel and dispatches |
+| `src/app/projects.ts` | Project records in one `kv` array: `ensureProject` creates one on its first dispatch or a workspace's first Session, `projectByPath` finds the project a directory already has, `renameProject` changes the display name alone, `routerSessionId` and `routerTitle` derive the project's Router Session and its title, `projectView` adds it to the API's rows, and `listProjects` and `projectByName` serve the sidebar, the panel and dispatches |
 | `src/app/skill-market.ts` | The plugin marketplace's cached index: `searchSkills` ranks repositories by how many of a query's words their name, description and topics hold, and then by stars |
 | `src/app/context.ts` | The built-in prompt text, read from `prompts/`, and the transcript entries Sessions read |
 | `src/app/skill-files.ts` | Packaged text: `promptFile`, which joins a file's one-sentence lines into paragraphs, and the bundled skills |
@@ -383,7 +383,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/client/api.ts` | Calls and polls of the management API, typed by `src/app/api.ts`, and the Decision filters of the Eval status |
 | `src/client/route.ts` | The tabs, the settings groups, the typed routes that `parseRoute` reads, and the route memory with the settings group opened last |
 | `src/client/overview.tsx` | The overview |
-| `src/client/projects-sidebar.tsx` | The sidebar seat: projects with the open Tickets each holds, grouped by project, and the rename a double click starts |
+| `src/client/projects-sidebar.tsx` | The sidebar seat: each project, the Router Session the plugin opened for it, and its worker Sessions folded away under it, plus the rename a double click starts |
 | `src/client/source.tsx`, `trigger.tsx`, `eval.tsx`, `execution.tsx` | One file per stage: its status, and its settings where it has some |
 | `src/client/thread.tsx`, `ticket.tsx` | The record pages: a Thread with its timeline, and a Ticket with its authorization, Inputs and Assignments |
 | `src/client/settings.tsx` | The Settings tab: the group navigation and the group on screen |
@@ -443,7 +443,7 @@ Everything else runs on both platforms, so a Windows checkout reports only the f
 | `tests/runtime-concurrency.spec.ts` | Work that overlaps: Triggers during a pass, Tickets that change during deliveries and launches |
 | `tests/http.spec.ts` | The same-origin and loopback checks, the status of each kind of failure, the body limit, path parameters and queries |
 | `tests/settings.spec.ts` | Settings saves that race a model or account check, a Policy sync that a save outran, and the refusals of the pause, a sync and a block |
-| `tests/projects.spec.ts` | Project records: one per dispatch name, the workspace recorded with it, a rename that changes the display name alone and survives a reopen, and the routes and ticket rows the sidebar reads |
+| `tests/projects.spec.ts` | Project records: one per dispatch name or session directory, the workspace recorded with it, the Router Session each project gets and its title, a rename that changes the display name alone and survives a reopen, a person's Session that opens a Router Session instead of being taken over, and the routes and ticket rows the sidebar reads |
 | `tests/views.spec.ts` | What the management views derive from the Store, such as the Thread a dropped message belongs to |
 | `tests/timeline.spec.ts` | A Thread's pages and a Trigger's neighbours by time and then id, with every received Trigger's time in one form |
 | `tests/migration.spec.ts` | The schema 11 migration: every stored record in its current shape, and the refusal of older schemas |
@@ -508,16 +508,19 @@ Nothing deletes old records yet, so these grow without bound: the `trigger`, `di
 
 ### Main Session tools
 
-The main Session has 14 application tools:
+The main Session and each project's Router Session have 16 application tools:
 
 | Purpose | Tools |
 | --- | --- |
 | Read and route | `orchestrator_read`, `orchestrator_route` |
+| Dispatch project work | `project_dispatch`, `skill_search` |
 | Manage Tickets | `orchestrator_ticket_retry`, `orchestrator_ticket_request_status`, `orchestrator_ticket_note` |
 | Re-evaluate | `orchestrator_trigger_requeue` |
 | Assess proactive work | `orchestrator_eval`, `orchestrator_eval_read`, `orchestrator_eval_decide` |
 | Communicate and unsubscribe | `orchestrator_reply`, `orchestrator_thread_unsubscribe` |
 | Configure | `orchestrator_settings_save`, `orchestrator_policy_sync`, `orchestrator_prompts_save` |
+
+`project_dispatch` names a project (or reuses the one its directory already has), opens that project's Router Session, and starts a Ticket in its own worker Session; `skill_search` suggests installable skills without installing anything.
 
 `orchestrator_route` accepts 1–20 decisions in order. Each accept, attach, stop or ignore runs as a separate Engine command. It also permits ignoring an inferred candidate directly from its card. `orchestrator_ticket_note` sends a fact as context, not authority.
 
@@ -527,11 +530,11 @@ The main Session also has DeepSeek Harness's `skill`, `bash`, `read`, `read_imag
 
 ### Presets and wait limits
 
-New main Sessions use `dsh-superagent-router` (`ROUTER_PRESET`). Shell commands and job waits return after 5 seconds. If the Web UI selects another preset before the first turn, `Sessions` restores this preset, or `WORKER_PRESET` for a worker.
+Router Sessions use `dsh-superagent-router` (`ROUTER_PRESET`): the background main Session and each project's `router-<project id>`, which the plugin creates in the project's directory instead of turning a Session a person opened into the router. Shell commands and job waits return after 5 seconds. If DSH selects another preset before the first turn, `Sessions` restores this preset, or `WORKER_PRESET` for a worker; it also keeps decorating a Session an earlier version already turned into the router. A Session a person opens now keeps the preset it was created with.
 
-The `noWait` guard in `src/app/sessions.ts` refuses main-Session shell commands that invoke `sleep` at a command position, shell `timeoutMs` above 30 seconds, and `job_output` waits above 5 seconds. Reports and job results arrive automatically, so waiting only delays incoming candidates.
+The `noWait` guard in `src/app/sessions.ts` refuses router-Session shell commands that invoke `sleep` at a command position, shell `timeoutMs` above 30 seconds, and `job_output` waits above 5 seconds. Reports and job results arrive automatically, so waiting only delays incoming candidates.
 
-Existing main Sessions on `standard` also need explicit timeouts for foreground commands and job waits; otherwise that preset's defaults hold the step for 60 and 30 seconds respectively. The host determines the current preset through `presetForSession`, falls back to the Session projection or header, and assumes `standard` if it cannot read the value.
+A Router Session that DSH still runs on `standard` also needs explicit timeouts for foreground commands and job waits; otherwise that preset's defaults hold the step for 60 and 30 seconds respectively. The host determines the current preset through `presetForSession`, falls back to the Session projection or header, and assumes `standard` if it cannot read the value.
 
 ### Executor tools
 

@@ -34,6 +34,15 @@ function HammerIcon({ size }: SidebarPanelIconOwnerProps) {
   </svg>
 }
 
+/**
+ * Opens a Session from the sidebar seat. A Session the shell cannot list yet is left for its next poll instead of raising an
+ * error in a seat that has no place to show one.
+ */
+function openSidebarSession(ctx: ClientContext, sessionId: string): void {
+  openKnownSession(ctx.sessions, sessionId as SessionId, target => { ctx.uiWorkspace.openSession(target) },
+    new AbortController().signal).catch(() => { /* the seat polls the same list again */ })
+}
+
 /** Mounted panel wrapper; cancels any pending Session navigation when a new one starts or the panel unmounts. */
 function Mounted({ ctx, t }: { ctx: ClientContext; t: T }) {
   const pending = useRef<AbortController>(undefined)
@@ -66,7 +75,7 @@ export function apply(ctx: ClientContext): void {
       (props: { t: T }) => <Mounted ctx={ctx} t={props.t} />)),
     ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({ name: 'sidebar.panellist', id: PANEL_ID, order: 10, label: () => t('panel'), locale: NS }, HammerIcon)),
     ctx.slots.inject('sidebar.projects', () => ctx.slots.register({ name: 'sidebar.projects', id: `${ENTRY}-projects`, order: 10, label: () => t('panel'), locale: NS },
-      (props: { wide?: boolean }) => <ProjectsSidebar {...props} t={t} />)),
+      (props: { wide?: boolean }) => <ProjectsSidebar {...props} t={t} open={session => { openSidebarSession(ctx, session) }} />)),
   ]
   let shown = views()
   /** @param enabled - whether the plugin's views belong on screen; the switch page itself stays registered below. */

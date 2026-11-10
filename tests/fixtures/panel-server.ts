@@ -45,7 +45,8 @@ const TICKET = {
 } satisfies TicketFields
 /** The project the fixture's first ticket belongs to, and the one a second dispatch would create. */
 export const project = (fields: Partial<ProjectRow> = {}): ProjectRow => ({ id: 'project-a1b2c3d4e5f6', key: 'dsh-spinner-words',
-  name: 'dsh-spinner-words', path: '/w/default-workspace', createdAt: '2026-09-22T00:00:00Z', ...fields })
+  name: 'dsh-spinner-words', path: '/w/default-workspace', createdAt: '2026-09-22T00:00:00Z',
+  sessionId: 'router-project-a1b2c3d4e5f6', ...fields })
 export const ticketSummary = (fields: Partial<TicketFields> = {}, stage: TicketStage = { stage: 'working' }): TicketRow =>
   ({ ...TICKET, ...fields, ...stage })
 export const threadSummary = (fields: Partial<ThreadRow> = {}): ThreadRow => ({

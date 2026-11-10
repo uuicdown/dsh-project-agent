@@ -101,13 +101,15 @@ export class Engine {
   /**
    * Dispatch a project request as a new ticket without an external Source or Policy gate: the ticket is created directly
    * with an explicit Mandate and its first Assignment starts at once, so the normal Ticket → Assignment → worker path runs.
+   * `dispatcher` records the main Session that dispatched it, whose conversation receives its reports and notices.
    */
-  dispatch(request: { project: string; projectId?: string; title: string; text: string; name: string; directory?: string; skills?: readonly string[]; model?: TicketModel }): Ticket {
+  dispatch(request: { project: string; projectId?: string; title: string; text: string; name: string; directory?: string; skills?: readonly string[]
+    model?: TicketModel; dispatcher?: string }): Ticket {
     return this.repo.atomic(() => {
       const at = new Date().toISOString()
       const id = `dispatch-${at}-${Math.random().toString(36).slice(2, 8)}`
-      return this.tickets.createDirect(id, request.title, request.title, request.text, { source: 'project', id: 'user' }, at, request.skills, request.model,
-        request.directory, request.projectId)
+      return this.tickets.createDirect(id, request.title, request.title, request.text, { source: 'project', id: 'user' }, at,
+        { skills: request.skills, model: request.model, directory: request.directory, projectId: request.projectId, dispatcher: request.dispatcher })
     })
   }
   /**

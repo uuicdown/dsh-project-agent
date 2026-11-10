@@ -11,7 +11,9 @@ declare global { var IS_REACT_ACT_ENVIRONMENT: boolean }
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
 type Entry = { options: { name: string; id?: string; key?: string; order?: number; locale?: string; label?: () => string }; component: ComponentType<Record<string, unknown>> }
-const t = ((key: keyof typeof zh) => zh[key] ?? key) as never
+/** The dictionary of the sidebar seat's locale, with the `{name}` template params the real translate fills in. */
+const t = ((key: keyof typeof zh, params?: Record<string, unknown>) => (zh[key] ?? key)
+  .replace(/\{(\w+)\}/g, (whole, name: string) => name in (params ?? {}) ? String(params![name]) : whole)) as never
 function fixture(listed: string[]) {
   const entries: Entry[] = []
   const dictionaries: Record<string, unknown> = {}
@@ -153,7 +155,7 @@ it('tells a dsh-superagent that does not answer from a record it does not have, 
 it('groups the sidebar by project, names each project, and renames one in place without moving its tickets', async () => {
   const renamed: { path: string; body: unknown }[] = []
   const listed = [{ id: 'project-a1b2c3d4e5f6', key: 'dsh-spinner-words', name: 'dsh-spinner-words', path: '/w/default-workspace',
-    createdAt: '2026-01-01T00:00:00Z' }]
+    createdAt: '2026-01-01T00:00:00Z', sessionId: 'router-project-a1b2c3d4e5f6' }]
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
     const path = new URL(url, 'http://127.0.0.1').pathname.replace('/orchestrator/api/', '')
     if (init?.method === 'PATCH') { renamed.push({ path, body: JSON.parse(String(init.body)) }); return Response.json(listed[0]) }
@@ -166,11 +168,20 @@ it('groups the sidebar by project, names each project, and renames one in place 
   const { projects } = fixture([])
   const view = await render(projects, { wide: true })
   const text = () => view.container.textContent ?? ''
-  // The project's own name heads its tickets, and a ticket it does not claim falls under the unassigned group.
+  // The project heads the Router Session the plugin opened for it, and its worker Sessions stay folded away until asked for.
   expect(text()).toContain('dsh-spinner-words')
-  expect(text()).toContain('修复回归')
+  expect(text()).toContain(zh.routerSession)
+  expect(text()).not.toContain('修复回归')
+  // A ticket the project does not claim is listed under the unassigned group as it is.
   expect(text()).toContain(zh.unassignedTickets)
   expect(text()).toContain('派单前的老工单')
+  const subSessions = zh.childSessions.replace('{count}', '1')
+  const toggles = [...view.container.querySelectorAll('div')].filter(item => item.textContent?.endsWith(subSessions))
+  // The last match is the disclosure row itself; the ones before it are its ancestors, whose text ends the same way.
+  const workers = toggles.at(-1)
+  expect(workers, view.container.innerHTML).toBeDefined()
+  await act(async () => { workers!.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
+  expect(text()).toContain('修复回归')
   expect(view.container.querySelectorAll('input')).toHaveLength(0)
   const heading = [...view.container.querySelectorAll('span')].find(item => item.textContent === 'dsh-spinner-words')!
   await act(async () => { heading.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })) })

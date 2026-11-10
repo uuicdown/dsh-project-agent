@@ -417,10 +417,11 @@ export class DshExecutor implements Executor {
   private failed(ticketId: string, summary: string): void {
     this.host.store.atomic(() => {
       const updated = this.host.engine.report(ticketId, { state: 'failed', summary })
-      this.relay(resultRelay(updated, 'failed', summary))
+      this.relay(resultRelay(updated, 'failed', summary), updated.dispatcher)
     })
   }
-  private relay({ id, text }: { id: string; text: string }): void { this.host.sessions.relay(id, text) }
+  /** Relays a report to the Session that dispatched its ticket, or to the main Session when no dispatcher is recorded. */
+  private relay({ id, text }: { id: string; text: string }, dispatcher?: string): void { this.host.sessions.relay(id, text, dispatcher) }
   private async launch(ticket: Ticket, assignment: Assignment): Promise<void> {
     const current = () => {
       if (this.host.closing()) throw new Error('dsh-superagent is stopping')
@@ -664,9 +665,9 @@ export class DshExecutor implements Executor {
       const before = latestReport(current)?.summary ?? ''
       const updated = this.host.engine.report(ticket.id, { state: 'waiting', summary: said || before })
       // A quiet final after orchestrator_report is not a new status or an empty handoff.
-      if (said) this.relay(resultRelay(updated, 'waiting', said))
+      if (said) this.relay(resultRelay(updated, 'waiting', said), updated.dispatcher)
       else if (!before.trim()) {
-        this.relay(resultRelay(updated, 'waiting', 'Worker ended without a status report. Use orchestrator_ticket_request_status to request one.'))
+        this.relay(resultRelay(updated, 'waiting', 'Worker ended without a status report. Use orchestrator_ticket_request_status to request one.'), updated.dispatcher)
       }
     })
   }

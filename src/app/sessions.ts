@@ -12,6 +12,7 @@ import type { HealthEntry } from '../infra/health.ts'
 import { AgentDelivery, messageId } from './delivery.ts'
 import type { Effects } from './effects.ts'
 import type { Variable } from './execution-environment.ts'
+import { isRouterSession } from './projects.ts'
 import { RetryHealth } from './retry-health.ts'
 import { initializeRoleModel } from './role-models.ts'
 import { bundledSkills } from './skill-files.ts'
@@ -30,8 +31,6 @@ export interface SessionsHost {
   /** The `models` health entry, which reports managed sessions waiting on a model-budget retry. */
   readonly health: HealthEntry
   readonly masterId: string
-  /** Standalone deployment: every person-facing Session routes, so any top-level non-worker Session is a router. */
-  readonly standalone: boolean
   readonly lifetime: AbortSignal
   /** False while the plugin is disabled: a tool call is refused instead of running. */
   enabled(): boolean
@@ -99,18 +98,18 @@ function noWait({ name, arguments: input }: { name: string; arguments: unknown }
 export class Sessions {
   private readonly agentDelivery: AgentDelivery
   /** Decorated agents mapped to their registered disposers and skill scope until the agent is disposed or `Sessions.dispose()` runs. */
-  /** The person-facing Session that routes in standalone mode; relays go here instead of the background master. */
-  private routerId: SessionId | undefined
   private readonly bindings = new Map<Agent, SessionBinding>()
   private readonly retryHealth = new RetryHealth()
   private readonly ctx: Context
-  /** Registers ordered `relay` and `notice` effect handlers that deliver to the main Session. */
+  /** Registers ordered `relay` and `notice` effect handlers that deliver to the main Session, or to the Session that dispatched a ticket. */
   constructor(private readonly host: SessionsHost) {
     this.ctx = host.context
     this.agentDelivery = new AgentDelivery(host.context)
-    // Deliver relays and notices to the main Session in the order they were queued.
-    host.effects.handle('relay', ({ text }, requestId) => this.prompt(this.relayTarget(), requestId, text, 'steer'), { ordered: true })
-    host.effects.handle('notice', ({ value, summary }, name) => this.inject(name, value, summary), { ordered: true })
+    // Deliver relays and notices in the order they were queued, each to the Session that dispatched its ticket while that
+    // Session is loaded: a person reads the answer where they asked for the work.
+    host.effects.handle('relay', ({ text, sessionId }, requestId) => this.relaySession(sessionId)
+      .then(target => this.prompt(target, requestId, text, 'steer')), { ordered: true })
+    host.effects.handle('notice', ({ value, summary, sessionId }, name) => this.inject(name, value, summary, sessionId), { ordered: true })
   }
   /** Subscribes to host agent and session events so newly created sessions are decorated and model-budget retries are reflected in health. Call once at startup. */
   install(): void {
@@ -132,8 +131,10 @@ export class Sessions {
     ctx.inject(['agentPresets'], child => {
       child.on('agent-preset/selected', (sessionId, preset) => {
         const ticketId = ticketOfSession(sessionId), agent = ctx.agents.get(sessionId as SessionId)
-        const router = sessionId === this.host.masterId
-          || (this.host.standalone && ticketId === undefined && agent?.session.header.parentSession === undefined)
+        // Only the Sessions the plugin routes are router Sessions: the master, a project's Router Session, and one an earlier
+        // version already turned into the router, which keeps working instead of being stranded under a preset without work
+        // tools. A Session a person opens now keeps the preset they opened it with.
+        const router = sessionId === this.host.masterId || isRouterSession(sessionId) || (agent !== undefined && this.legacyRouter(agent))
         const ours = router ? ROUTER_PRESET : ticketId && this.host.store.tickets.get(ticketId) ? WORKER_PRESET : undefined
         if (!ours || preset === ours || !agent) return
         const presets = child.get('agentPresets') as { select(agent: Agent, preset: string): Promise<string> }
@@ -182,20 +183,42 @@ export class Sessions {
   }
   /** The id of the message `prompt` delivers under `requestId`, which DSH's inbox events name it by. */
   promptedId(requestId: string): MessageId { return messageId(key(requestId)) }
-  /** The Session relays and notices reach: the person-facing router in standalone mode, else the background master. */
-  private relayTarget(): SessionId { return (this.routerId ?? this.host.masterId) as SessionId }
-  /** Enqueues a steering relay to the main Session; relays are durable and retried by `Effects` until delivered, at most once per `requestId`. */
-  relay(requestId: string, text: string): void { this.host.effects.enqueue('relay', requestId, { text }) }
-  /** Enqueues a durable background notice for injection into the main Session; a new notice with the same `name` replaces a still-waiting notice of that `name`. */
-  notify(name: string, value: Record<string, unknown>, summary: string): void { this.host.effects.enqueue('notice', name, { value, summary }) }
+  /** The Session relays and notices fall back to: the background master, whose conversation is the deployment's own. */
+  private relayTarget(): SessionId { return this.host.masterId as SessionId }
+  /**
+   * The Session a relay or a notice reaches: `sessionId`, the main Session that dispatched the ticket it is about, restored
+   * if a restart or a closed tab left it dormant; otherwise the main Session, so work a person asked for elsewhere still
+   * reports somewhere instead of being lost.
+   */
+  private async relaySession(sessionId?: string): Promise<SessionId> {
+    if (sessionId === undefined) return this.relayTarget()
+    const target = sessionId as SessionId
+    if (this.ctx.agents.get(target)) return target
+    const resolved = await this.ctx.sessionController.resolveAgent(target)
+    return 'error' in resolved ? this.relayTarget() : target
+  }
+  /**
+   * Enqueues a steering relay to the main Session, or to `sessionId`, the Session that dispatched the ticket it is about;
+   * relays are durable and retried by `Effects` until delivered, at most once per `requestId`.
+   */
+  relay(requestId: string, text: string, sessionId?: string): void {
+    this.host.effects.enqueue('relay', requestId, { text, ...(sessionId ? { sessionId } : {}) })
+  }
+  /**
+   * Enqueues a durable background notice for injection into the main Session, or into `sessionId` when its dispatcher is
+   * known; a new notice with the same `name` replaces a still-waiting notice of that `name`.
+   */
+  notify(name: string, value: Record<string, unknown>, summary: string, sessionId?: string): void {
+    this.host.effects.enqueue('notice', name, { value, summary, ...(sessionId ? { sessionId } : {}) })
+  }
   /** Waits for currently runnable `notice` effects to settle and returns `'injected'` if notice `name` has reached the main Session or `'pending'` if it is still queued. */
   async delivery(name: string): Promise<'injected' | 'pending'> {
     await this.host.effects.idle('notice')
     return this.host.effects.pending('notice', name) ? 'pending' : 'injected'
   }
-  /** Injects a notice into the main Session without waking it; no-op if the main Session does not exist yet. */
-  private async inject(name: string, value: Record<string, unknown>, summary: string): Promise<void> {
-    const resolved = await this.ctx.sessionController.resolveAgent(this.relayTarget() as SessionId)
+  /** Injects a notice into the main Session, or into the Session that dispatched the ticket it is about, without waking it; no-op if that Session does not exist yet. */
+  private async inject(name: string, value: Record<string, unknown>, summary: string, sessionId?: string): Promise<void> {
+    const resolved = await this.ctx.sessionController.resolveAgent(await this.relaySession(sessionId))
     if ('error' in resolved) return
     // Deduplicate by notice name and payload hash so retries are idempotent while updated payloads still deliver.
     const text = JSON.stringify(value)
@@ -253,8 +276,10 @@ export class Sessions {
   private async decorate(agent: Agent): Promise<void> {
     if (this.bindings.has(agent)) return
     const host = this.host
-    const master = agent.id === host.masterId
-      || (host.standalone && agent.session.header.parentSession === undefined && this.ticketOf(agent) === undefined)
+    // The plugin decorates only the Sessions it routes: the background master, each project's Router Session, and a Session an
+    // earlier version already turned into the router (its preset carries no work tools, so leaving it alone would strand it).
+    // A Session a person opens now stays theirs, in the preset they opened it with.
+    const master = agent.id === host.masterId || isRouterSession(agent.id) || this.legacyRouter(agent)
     const ticket = master ? undefined : this.ticketOf(agent)
     if (!master && !ticket) { this.limitSubagent(agent); return }
     const binding: SessionBinding = { disposers: [] }
@@ -283,8 +308,7 @@ export class Sessions {
     const ownTools = host.tools(agent, ticket)
     for (const tool of ownTools) register(tool.name, tool.description, tool.schema, tool.execute)
     if (master) {
-      if (this.host.standalone && agent.id !== this.host.masterId) this.routerId = agent.id as SessionId
-      // Select the router preset directly: the selection event is not guaranteed for a Session the Web UI creates.
+      // Select the router preset directly: the selection event is not guaranteed for a Session the plugin creates.
       const presets = this.ctx.get('agentPresets') as { select(agent: Agent, preset: string): Promise<string>
         presetForSession?(session: Agent['session']): string | undefined } | undefined
       // A registry that cannot answer is read as the preset the Session was created with, instead of failing startup.
@@ -326,6 +350,14 @@ export class Sessions {
         : projections?.stateOf?.(agent.session, 'agentPreset')
       return (selected ?? agent.session.header.agentPreset) === ROUTER_PRESET
     } catch { return false }
+  }
+  /**
+   * Whether an earlier version of the plugin already turned this Session into its router: it is a top-level Session, no
+   * ticket's worker, and it runs the router preset. That preset carries no work tools, so such a Session keeps being a router
+   * after this upgrade rather than losing everything it had. A Session opened after the upgrade never selects that preset.
+   */
+  private legacyRouter(agent: Agent): boolean {
+    return agent.session.header.parentSession === undefined && this.ticketOf(agent) === undefined && this.routed(agent)
   }
   /**
    * An Executor Session's tools: only the profile's work tools, which DSH requires to be known, and none once its ticket

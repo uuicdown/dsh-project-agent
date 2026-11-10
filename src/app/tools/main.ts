@@ -8,7 +8,8 @@ import { IM_WORDS, NOTE_WORDS, wordCount } from '../../infra/text.ts'
 import { AssessmentSchema, EvalReadSchema, WorktreeNameSchema, type MasterAssessor } from '../assessment.ts'
 import { ticketCard } from '../cards.ts'
 import { PromptConfigSchema, savePrompts, type Prompts } from '../prompts.ts'
-import { ensureProject } from '../projects.ts'
+import { ensureProject, dispatchBriefing, projectByPath, type ProjectRecord } from '../projects.ts'
+import { workerSessionId } from '../../executor/dsh.ts'
 import { readResource, type MainResourceHost, type ResourceHost } from '../resources.ts'
 import type { Sessions } from '../sessions.ts'
 import type { Settings } from '../settings.ts'
@@ -28,6 +29,8 @@ export interface MainToolsHost {
   readonly settings: Pick<Settings, 'view' | 'block' | 'save' | 'pause' | 'sync'>
   readonly assessor: Pick<MasterAssessor, 'context' | 'read' | 'decide'>
   readonly resources: ResourceHost
+  /** Opens `project`'s Router Session if it has none yet, so every dispatched project has a conversation of its own. */
+  projectRouter(project: ProjectRecord): Promise<unknown>
   /** Schedules a pass to carry out work queued by an Engine command (such as an Eval or ticket resume). */
   requestPass(): void
   sendReplies(): Promise<void>
@@ -310,12 +313,12 @@ export function mainTools(host: MainToolsHost, agent: Agent): Tool[] {
     }),
     tool({
       name: 'project_dispatch',
-      description: 'Dispatch a project request as a new ticket. The main Session never performs the work itself: the ticket runs in its own persistent worker Session, which receives the listed skills. Use this for every request from a person in a project.',
+      description: 'Dispatch a project request as a new ticket. The main Session never performs the work itself: the ticket runs in its own persistent worker Session, which receives the listed skills. Use this for every request from a person in a project. Its worker reports back to this conversation, which is where you answer in one short paragraph. It answers the ticket card and what the dispatch chose: the worker Session, the skills, the model route, the Session that dispatched it and how many earlier dispatches briefed the worker.',
       schema: z.object({
         project: z.string().min(1).describe('The project this work belongs to; items of one project share a thread.'),
         title: z.string().min(1).max(200).describe('A short label of the work.'),
-        task: z.string().min(1).describe('The complete request for the worker, in the user\'s own terms.'),
-        skills: z.array(z.string()).default([]).describe('Skill names the worker may use for this ticket.'),
+        task: z.string().min(1).describe('The complete request for the worker, in the user\'s own terms. The worker also receives a briefing of the project\'s earlier dispatches.'),
+        skills: z.array(z.string()).default([]).describe('Skill names the worker may use for this ticket; an empty list allows every installed skill.'),
         provider: z.string().optional().describe('Model provider route for the worker; omit to use the configured executor role model.'),
         model: z.string().optional().describe('Model id for the worker; give it together with provider.'),
         reasoningEffort: z.string().optional().describe('Reasoning effort id for the worker model.'),
@@ -330,19 +333,26 @@ export function mainTools(host: MainToolsHost, agent: Agent): Tool[] {
         const registry = host.context.get('workspaceRegistry') as { get(id: string): { path: string } | undefined } | undefined
         const workspace = header.workspaceId === undefined ? undefined : registry?.get(header.workspaceId)
         const cwd = header.cwd ?? workspace?.path
-        const text = cwd === undefined ? args.task
-          : `Project directory: ${cwd}
-Work inside that directory; never ask the person for its path.
-
-${args.task}`
         // The named project is created on its first dispatch, so the sidebar can group and rename what the work belongs to.
-        const project = ensureProject(host.store, cwd, args.project)
+        // A Session that already belongs to a project dispatches into that project, whatever name it gives it.
+        const project = projectByPath(host.store, cwd ?? '') ?? ensureProject(host.store, cwd, args.project)
+        // Every project has a Router Session of its own: the conversation its workers report in, and where a person continues.
+        await host.projectRouter(project)
+        // Every dispatch still runs in its own ticket and Session, so the new one starts with what the project already did.
+        const earlier = host.store.tickets.list().filter(ticket => ticket.projectId === project.id)
+          .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+        const text = [cwd === undefined ? undefined : `Project directory: ${cwd}\nWork inside that directory; never ask the person for its path.`,
+          dispatchBriefing(project.name, earlier), args.task].filter(Boolean).join('\n\n')
         try {
           const ticket = host.quietly(() => host.engine.dispatch({
-            project: args.project, projectId: project.id, title: args.title, text, name: 'task', directory: cwd, skills: args.skills, model,
+            project: project.name, projectId: project.id, title: args.title, text, name: 'task', directory: cwd, skills: args.skills, model,
+            dispatcher: agent.id,
           }))
           host.requestPass()
-          return { decision: 'accept', reason: 'Dispatched', ticket: ticketCard(ticket) }
+          // Answer what the dispatch chose, so the person can see the skills, the model route and the Session it started.
+          return { decision: 'accept', reason: 'Dispatched', ticket: ticketCard(ticket), dispatch: {
+            project: project.name, project_id: project.id, session: workerSessionId(ticket.id), skills: [...ticket.skills ?? []],
+            skills_unrestricted: !ticket.skills?.length, model: model ?? null, briefing: earlier.length, dispatcher: agent.id } }
         } catch (error) {
           throw error
         }

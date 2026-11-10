@@ -283,6 +283,11 @@ export interface Ticket {
   skills?: readonly string[]
   /** Project this ticket belongs to (see `ProjectRecord`); absent for a Source-accepted ticket or a dispatch without one. */
   projectId?: string
+  /**
+   * The main Session that dispatched this ticket, whose conversation hears its reports and notices first; absent for a
+   * Source-accepted ticket, whose reports go to the main Session that owns the Source.
+   */
+  dispatcher?: string
   /** Model route this ticket's worker runs under; undefined uses the configured worker role model. */
   model?: TicketModel
   decisionId: string

@@ -1,12 +1,12 @@
 /** Overview page: pending Tickets requiring human action, active system problems, 24-hour flow counts, and Executor load. */
-import type { ReactNode } from 'react'
+import { Fragment, type ReactNode } from 'react'
 import { usePoll, type Problem } from './api.ts'
 import { Button, Icon } from './controls.tsx'
 import { useAction, usePanel, usePanelData } from './provider.tsx'
 import { setupPage, settingsRoute, type Route } from './route.ts'
 import { TicketLine } from './rows.tsx'
 import { healthText, localized, reasonLabel, valueLabel, readableMarkers } from './text.ts'
-import { CheckSetupButton, ConfirmButton, Hint, LoadState, Section, SetupMessage } from './widgets.tsx'
+import { CheckSetupButton, ConfirmButton, Hint, LoadState, Section, SessionButton, SetupMessage } from './widgets.tsx'
 
 function ProblemLine({ problem, onChanged }: { problem: Problem; onChanged: () => Promise<void> }) {
   const { t, call, navigate } = usePanel()
@@ -59,7 +59,7 @@ function ProblemLine({ problem, onChanged }: { problem: Problem; onChanged: () =
 }
 
 
-/** Project seat: the router and the tickets it dispatched, each ticket under the project it belongs to. */
+/** Project seat: each project's Router Session and the tickets it dispatched, each ticket under the project it belongs to. */
 function ProjectsSection() {
   const { t, call } = usePanel()
   const { data } = usePoll(() => call('GET tickets', { query: { state: 'open', limit: 50 } }), [])
@@ -70,21 +70,28 @@ function ProjectsSection() {
   const sorted = [...items].sort((a, b) => rank(a.stage) - rank(b.stage))
   const listed = projects?.items ?? []
   const claimed = new Set(listed.map(project => project.id))
-  const groups = listed.map(project => ({ id: project.id, name: project.name,
+  const groups = listed.map(project => ({ id: project.id, name: project.name, sessionId: project.sessionId,
     tickets: sorted.filter(ticket => ticket.projectId === project.id) }))
   // A ticket no project claims is one dispatched before projects existed or from a Session without a workspace.
   const orphans = sorted.filter(ticket => !ticket.projectId || !claimed.has(ticket.projectId))
-  if (orphans.length) groups.push({ id: '', name: t('unassignedTickets'), tickets: orphans })
+  if (orphans.length) groups.push({ id: '', name: t('unassignedTickets'), sessionId: '', tickets: orphans })
   return <Section title={t('projects')} count={items.length}>
     <ul className="dt-list dt-cards">
-      <li className="dt-row"><div className="dt-row-main"><div className="dt-att-what" style={{ fontWeight: 600 }}>{t('masterSession')}</div></div></li>
-      {sorted.length === 0 ? <li className="dt-row"><div className="dt-row-main"><Hint>{t('noDispatches')}</Hint></div></li> : groups.map(group => <>
+      {sorted.length === 0 ? <li className="dt-row"><div className="dt-row-main"><Hint>{t('noDispatches')}</Hint></div></li> : groups.map(group => <Fragment
+        key={group.id || 'unassigned'}>
         <li key={`${group.id}-name`} className="dt-row"><div className="dt-row-main">
           <div className="dt-att-what" style={{ fontWeight: 600 }} title={group.name}>{group.name}</div>
           <div className="dt-row-meta"><span className="dt-badge">{t('projectCount', { count: group.tickets.length })}</span></div>
         </div></li>
+        {/* The project's own Router Session: the conversation the plugin opened for it, and where its workers report. */}
+        {group.sessionId ? <li key={`${group.id}-router`} className="dt-row" style={{ paddingLeft: 24 }}>
+          <div className="dt-row-main">
+            <div className="dt-att-what">{t('routerSession')}</div>
+            <div className="dt-row-meta"><SessionButton variant="outline" sessionId={group.sessionId} /></div>
+          </div>
+        </li> : null}
         {group.tickets.map(ticket => <li
-          key={ticket.id} className="dt-row" style={{ paddingLeft: 24 }}>
+          key={ticket.id} className="dt-row" style={{ paddingLeft: group.sessionId ? 48 : 24 }}>
           <div className="dt-row-main">
             <div className="dt-att-what">{ticket.title}</div>
             <div className="dt-row-meta">
@@ -93,7 +100,7 @@ function ProjectsSection() {
             </div>
           </div>
         </li>)}
-      </>)}
+      </Fragment>)}
     </ul>
   </Section>
 }

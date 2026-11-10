@@ -5,7 +5,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { z } from 'zod'
 import { THREAD_FILTERS, TICKET_FILTERS, type Api, type ApiResponse, type RouteParams } from './api.ts'
 import { sourceSkills } from './context.ts'
-import { listProjects, renameProject } from './projects.ts'
+import { listProjects, projectView, renameProject, type ProjectRecord } from './projects.ts'
 import type { ModelCatalog } from '@deepseek-ai/dsh-api-session-controller/types'
 import { PromptConflict, SKILL_NAME, SKILL_PREFIX, TEAM_SECTIONS, builtInBase, builtInParts, defaultPrompts, savePrompts, type Prompts }
   from './prompts.ts'
@@ -54,6 +54,8 @@ export interface HttpHost {
   setEnabled(enabled: boolean): boolean
   links(): LinkTarget
   ticketEnvironment(ticket: Ticket): Variable[]
+  /** Opens a project's Router Session when it has none yet; a rename reaches its Session's title the same way. */
+  ensureProjectRouter(project: ProjectRecord): Promise<unknown>
   checkSetup(): void
   requestPass(): void
   models(): Promise<ModelCatalog>
@@ -162,12 +164,14 @@ function routes(runtime: HttpHost): Routes {
     'GET overview': () => overview(views(runtime), runtime.health, policyVersion(store.settings()),
       executorLoad(store, runtime.executor.activeCount()), runtime.setupProblem ?? runtime.feishuProblem),
     'GET search': ({ query }) => search(views(runtime), query.q ?? '', runtime.sourceLinks),
-    'GET projects': () => ({ items: listProjects(store) }),
+    'GET projects': () => ({ items: listProjects(store).map(projectView) }),
     'PATCH projects/:id': async ({ params, body }) => {
       const { name } = ProjectName.parse(await body())
       const renamed = renameProject(store, params.id, name)
       if (!renamed) throw new RouteError(404, 'Project not found')
-      return renamed
+      // The Router Session carries the project's name, so a rename reaches its title too.
+      await runtime.ensureProjectRouter(renamed)
+      return projectView(renamed)
     },
     'GET sources': () => sourcesStatus(views(runtime), runtime.health, setupState(runtime)),
     'GET settings': () => settingsView(store, runtime.sources, runtime.health, setupState(runtime), runtime.machine.stateDir),

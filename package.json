@@ -2,7 +2,7 @@
   "name": "dsh-project-agent",
   "author": "DeepSeek Harness Team <team@dsh.dev>",
   "license": "MIT",
-  "version": "0.1.22",
+  "version": "0.1.23",
   "private": true,
   "description": "Project workspace agent for DSH: a router main Session dispatches Tickets to persistent worker Sessions with per-ticket skills.",
   "type": "module",

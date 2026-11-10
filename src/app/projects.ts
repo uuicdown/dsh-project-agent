@@ -3,7 +3,9 @@
  * display name alone. Records are read and written inside `atomic` because the whole list is one value.
  */
 import { createHash } from 'node:crypto'
+import { sameDirectory } from '../infra/environment.ts'
 import { KV, type Key } from '../kv.ts'
+import { latestReport, liveTicket, type Ticket } from '../core/index.ts'
 
 /** One project: `id` and `key` never change, `name` is what a person renames, and `path` is where it last dispatched from. */
 export interface ProjectRecord {
@@ -16,8 +18,11 @@ export interface ProjectRecord {
   path: string
   createdAt: string
 }
-/** One project as the management API lists it. */
-export interface ProjectView extends ProjectRecord {}
+/** One project as the management API lists it, with the Router Session the plugin created for it. */
+export interface ProjectView extends ProjectRecord {
+  /** The project's Router Session: one per project, created by the plugin rather than by taking over a person's Session. */
+  sessionId: string
+}
 /** The management API's project list. */
 export interface ProjectListView { items: ProjectView[] }
 /** The key-value surface a project list needs; `Store` provides it and `atomic` makes the read-modify-write one transaction. */
@@ -40,6 +45,18 @@ const directory = (path: string): string => path.replace(/[\\/]+$/, '')
 /** The record id of a project created under `key`; the hash keeps it short and free of the name's own characters. */
 export function projectId(key: string): string { return `project-${createHash('sha1').update(key).digest('hex').slice(0, 12)}` }
 
+/**
+ * The id of a project's Router Session, derived from the project: every caller asks for the same Session, and no second
+ * record is written to remember it. A person's own Session is never one of these, which is what keeps it their Session.
+ */
+export const routerSessionId = (projectId: string): string => `router-${projectId}`
+/** Whether `sessionId` is a project's Router Session, which the plugin created and decorates itself. */
+export const isRouterSession = (sessionId: string): boolean => sessionId.startsWith('router-')
+/** The title a project's Router Session carries, so its conversation is found under the project in the Session list. */
+export const routerTitle = (project: ProjectRecord): string => `Router · ${project.name}`
+/** A project as the management API lists it: its record and the Router Session that belongs to it. */
+export const projectView = (project: ProjectRecord): ProjectView => ({ ...project, sessionId: routerSessionId(project.id) })
+
 /** Every project, oldest first; an untouched database holds none. */
 export function listProjects(store: ProjectStore): ProjectRecord[] { return [...(store.get(KV.projects.all) ?? [])] }
 
@@ -48,6 +65,16 @@ export function projectByName(store: ProjectStore, name: string): ProjectRecord 
   const wanted = trimmed(name)
   if (!wanted) return undefined
   return listProjects(store).find(project => project.name === wanted || project.key === wanted)
+}
+
+/**
+ * The project that works in `path`, whatever name a dispatch gives it: one directory holds one project, so a Session that
+ * already belongs to a project dispatches into that project instead of creating a second one beside it.
+ */
+export function projectByPath(store: ProjectStore, path: string): ProjectRecord | undefined {
+  const wanted = directory(path)
+  if (!wanted) return undefined
+  return listProjects(store).find(project => project.path !== '' && sameDirectory(project.path, wanted))
 }
 
 /**
@@ -88,4 +115,31 @@ export function renameProject(store: ProjectStore, id: string, name: string): Pr
     if (found.name !== renamed) { found.name = renamed; store.set(KV.projects.all, projects) }
     return found
   })
+}
+
+/** One earlier dispatch as a new worker hears it: what it was, how it ended, and what it last reported. */
+export interface DispatchHistory { at: string; title: string; state: string; report?: string }
+/** How many earlier dispatches a new worker hears about, and how much of each report the briefing keeps. */
+const HISTORY_TICKETS = 8, HISTORY_REPORT_CHARS = 240
+
+/** The latest dispatches of a project, in the order they happened, as a briefing names them; `tickets` is chronological. */
+export function dispatchHistory(tickets: readonly Ticket[], limit = HISTORY_TICKETS): DispatchHistory[] {
+  return tickets.slice(-limit).map(ticket => {
+    const said = latestReport(ticket)?.summary.trim()
+    return { at: ticket.createdAt, title: ticket.title, state: liveTicket(ticket) ? 'open' : ticket.ended!.outcome,
+      ...said ? { report: said.slice(0, HISTORY_REPORT_CHARS) } : {} }
+  })
+}
+
+/**
+ * The briefing a project's next dispatch starts its worker with: what the project already did, so a new worker Session
+ * begins with the project's context instead of from nothing. Every dispatch still runs in its own ticket and Session, which
+ * keeps each request's authority and tool limits separate; this carries the continuity. Undefined for a first dispatch.
+ */
+export function dispatchBriefing(project: string, tickets: readonly Ticket[]): string | undefined {
+  const history = dispatchHistory(tickets)
+  if (!history.length) return undefined
+  const lines = history.map(item => `- ${item.at} · ${item.title} · ${item.state}${item.report ? ` · said: ${item.report}` : ''}`)
+  return [`Earlier dispatches in project ${project} (${history.length}, oldest first):`, ...lines,
+    'Treat this as the context earlier sessions left behind: continue from it, and do not redo what these reports say is done.'].join('\n')
 }

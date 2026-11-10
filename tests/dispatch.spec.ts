@@ -40,6 +40,15 @@ describe('dispatch', () => {
     expect(h.launches[0]![0].id).toBe(ticket.id)
   })
 
+  it('records the main Session that dispatched the ticket, so its reports go back there', () => {
+    const h = harness()
+    const ticket = h.engine.dispatch({ project: 'p1', title: 'Write the notice', text: 'Draft a notice', name: 'task', dispatcher: 'chat-main' })
+    expect(ticket.dispatcher).toBe('chat-main')
+    expect(h.repo.tickets.get(ticket.id)?.dispatcher).toBe('chat-main')
+    // A dispatch from no Session keeps none, and its reports go to the main Session as before.
+    expect(h.engine.dispatch({ project: 'p1', title: 'Other', text: 'Other', name: 'task' })).not.toHaveProperty('dispatcher')
+  })
+
   it('records the project a dispatch belongs to, and leaves it out when there is none', () => {
     const h = harness()
     const ticket = h.engine.dispatch({ project: 'dsh-spinner-words', projectId: 'project-0123456789ab',
