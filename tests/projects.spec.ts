@@ -99,6 +99,18 @@ let host: Host
 beforeEach(async () => { host = await startRuntime(undefined, { standalone: true }) })
 afterEach(async () => { await host.stop() })
 
+/**
+ * The agent of the worker Session `ticketId` runs in, once the launch that opens it has run. A launch the host could not start
+ * leaves no agent and records why on the assignment, so the failure names that reason instead of only the missing entry.
+ */
+const workerAgent = (ticketId: string) => vi.waitFor(() => {
+  const id = `worker-${ticketId}`
+  const agent = host.agents.get(id)
+  if (agent) return agent
+  const report = host.runtime.store.tickets.get(ticketId)?.assignments.at(-1)?.report
+  throw new Error(`${id} never opened; agents=${[...host.agents.keys()].join(', ') || '(none)'}; assignment report=${JSON.stringify(report ?? null)}`)
+}, { timeout: 5000, interval: 10 })
+
 it('groups a dispatch into its named project, shows the project on ticket rows, and renames it over the management API', async () => {
   const header = (host.agents.get(host.runtime.masterId) as unknown as { session: { header: Record<string, unknown> } }).session.header
   header.cwd = '/w/default-workspace'
@@ -160,7 +172,7 @@ it('continues an earlier dispatch in its Session when the router judges the requ
   const firstId = (first.ticket as { ticket_id: string }).ticket_id
   const sessionId = `worker-${firstId}`
   // The worker handed off: its turn ended, so its Session is idle between turns.
-  const worker = host.agents.get(sessionId) as unknown as { status: string }
+  const worker = await workerAgent(firstId) as unknown as { status: string }
   worker.status = 'idle'
   host.ctx.emit('agent/status', { agent: worker, status: 'idle' } as never)
   await host.runtime.idle()
@@ -184,7 +196,8 @@ it('continues an earlier dispatch in its Session when the router judges the requ
   const thirdId = (third.ticket as { ticket_id: string }).ticket_id
   expect(third.dispatch).toMatchObject({ session: `worker-${thirdId}` })
   expect((third.dispatch as Record<string, unknown>).continued_from).toBeUndefined()
-  expect(host.agents.has(`worker-${thirdId}`)).toBe(true)
+  // A request about different work opens a Session of its own, so the earlier one is not the only worker this project has.
+  await workerAgent(thirdId)
 })
 
 it('refuses to continue a Session whose worker still runs, and an earlier dispatch of another project', async () => {
@@ -195,7 +208,7 @@ it('refuses to continue a Session whose worker still runs, and an earlier dispat
   await host.runtime.idle()
   const firstId = (first.ticket as { ticket_id: string }).ticket_id
   // Its worker is running: the Session is no place for another ticket until it hands off.
-  expect((host.agents.get(`worker-${firstId}`) as unknown as { status: string }).status).toBe('running')
+  expect((await workerAgent(firstId) as unknown as { status: string }).status).toBe('running')
   await expect(host.runTool(host.runtime.masterId, 'project_dispatch',
     { project: 'dsh-spinner-words', title: 'Add the note', task: 'Add the note', continue_ticket: firstId }))
     .rejects.toThrow(/running/)
