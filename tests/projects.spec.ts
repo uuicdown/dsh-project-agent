@@ -99,25 +99,25 @@ let host: Host
 beforeEach(async () => { host = await startRuntime(undefined, { standalone: true }) })
 afterEach(async () => { await host.stop() })
 
+/** A project's directory, which the worker a dispatch opens runs in: a real one, because the launch prepares it on this machine. */
+const workspace = () => join(host.directory, 'workspace')
+
 /**
- * The agent of the worker Session `ticketId` runs in, once the launch that opens it has run. A launch the host could not start
- * leaves no agent and records why on the assignment, so the failure names that reason instead of only the missing entry.
+ * The agent of the worker Session `ticketId` runs in, once the launch that opens it has run. A launch that cannot prepare the
+ * project's directory leaves no agent and records why on the assignment, so the failure names that reason.
  */
 const workerAgent = (ticketId: string) => vi.waitFor(() => {
   const id = `worker-${ticketId}`
   const agent = host.agents.get(id)
   if (agent) return agent
   const assignment = host.runtime.store.tickets.get(ticketId)?.assignments.at(-1)
-  const effects = host.runtime.store.db.prepare('SELECT kind, key, attempts, due, error FROM effect ORDER BY seq').all()
-  const settings = host.runtime.store.settings()
   throw new Error(`${id} never opened; agents=${[...host.agents.keys()].join(', ') || '(none)'}`
-    + `; assignment=${assignment?.state}/${JSON.stringify(assignment?.report ?? null)}; effects=${JSON.stringify(effects)}`
-    + `; prepare=${JSON.stringify(settings.executor.prepare)}; paused=${String(settings.paused)}`)
-}, { timeout: 3000, interval: 250 })
+    + `; assignment=${assignment?.state} ${assignment?.report?.summary ?? ''}`)
+}, { timeout: 3000, interval: 100 })
 
 it('groups a dispatch into its named project, shows the project on ticket rows, and renames it over the management API', async () => {
   const header = (host.agents.get(host.runtime.masterId) as unknown as { session: { header: Record<string, unknown> } }).session.header
-  header.cwd = '/w/default-workspace'
+  header.cwd = workspace()
   const dispatched = await host.runTool(host.runtime.masterId, 'project_dispatch',
     { project: 'dsh-spinner-words', title: 'Draft the readme', task: 'Draft the readme', skills: [] })
   await host.runtime.idle()
@@ -128,7 +128,7 @@ it('groups a dispatch into its named project, shows the project on ticket rows, 
   expect(listed.status).toBe(200)
   const items = (listed.body as { items: { id: string; name: string; key: string; path: string; sessionId: string }[] }).items
   expect(items).toHaveLength(1)
-  expect(items[0]).toMatchObject({ name: 'dsh-spinner-words', key: 'dsh-spinner-words', path: '/w/default-workspace' })
+  expect(items[0]).toMatchObject({ name: 'dsh-spinner-words', key: 'dsh-spinner-words', path: workspace() })
   // The project's own Router Session is created with it, so the person has a conversation to dispatch from.
   expect(items[0]!.sessionId).toBe(`router-${items[0]!.id}`)
   expect(host.agents.has(items[0]!.sessionId)).toBe(true)
@@ -140,7 +140,7 @@ it('groups a dispatch into its named project, shows the project on ticket rows, 
   const renamed = await host.api('PATCH', `projects/${items[0]!.id}`, { name: '旋转词插件' })
   expect(renamed.status).toBe(200)
   expect(await host.api('GET', 'projects')).toMatchObject({ status: 200,
-    body: { items: [{ id: items[0]!.id, name: '旋转词插件', path: '/w/default-workspace' }] } })
+    body: { items: [{ id: items[0]!.id, name: '旋转词插件', path: workspace() }] } })
   expect(host.runtime.store.tickets.get(ticketId)!.projectId).toBe(items[0]!.id)
   expect(await host.api('PATCH', 'projects/project-missing', { name: 'x' })).toMatchObject({ status: 404 })
   expect(await host.api('PATCH', `projects/${items[0]!.id}`, { name: '   ' })).toMatchObject({ status: 400 })
@@ -148,7 +148,7 @@ it('groups a dispatch into its named project, shows the project on ticket rows, 
 
 it('shows what a dispatch chose, and starts each new worker with the project\'s earlier dispatches', async () => {
   const header = (host.agents.get(host.runtime.masterId) as unknown as { session: { header: Record<string, unknown> } }).session.header
-  header.cwd = '/w/default-workspace'
+  header.cwd = workspace()
   const first = await host.runTool(host.runtime.masterId, 'project_dispatch',
     { project: 'dsh-spinner-words', title: 'Draft the readme', task: 'Draft the readme', skills: ['gongwen'] })
   await host.runtime.idle()
@@ -169,7 +169,7 @@ it('shows what a dispatch chose, and starts each new worker with the project\'s 
 
 it('continues an earlier dispatch in its Session when the router judges the request follows on', async () => {
   const header = (host.agents.get(host.runtime.masterId) as unknown as { session: { header: Record<string, unknown> } }).session.header
-  header.cwd = '/w/default-workspace'
+  header.cwd = workspace()
   const first = await host.runTool(host.runtime.masterId, 'project_dispatch',
     { project: 'dsh-spinner-words', title: 'Draft the readme', task: 'Draft the readme' })
   await host.runtime.idle()
@@ -206,7 +206,7 @@ it('continues an earlier dispatch in its Session when the router judges the requ
 
 it('refuses to continue a Session whose worker still runs, and an earlier dispatch of another project', async () => {
   const header = (host.agents.get(host.runtime.masterId) as unknown as { session: { header: Record<string, unknown> } }).session.header
-  header.cwd = '/w/default-workspace'
+  header.cwd = workspace()
   const first = await host.runTool(host.runtime.masterId, 'project_dispatch',
     { project: 'dsh-spinner-words', title: 'Draft the readme', task: 'Draft the readme' })
   await host.runtime.idle()
@@ -217,7 +217,7 @@ it('refuses to continue a Session whose worker still runs, and an earlier dispat
     { project: 'dsh-spinner-words', title: 'Add the note', task: 'Add the note', continue_ticket: firstId }))
     .rejects.toThrow(/running/)
   // Another project's dispatch cannot take this project's Session.
-  header.cwd = '/w/other'
+  header.cwd = join(host.directory, 'other-workspace')
   await expect(host.runTool(host.runtime.masterId, 'project_dispatch',
     { project: 'other-project', title: 'Other work', task: 'Other work', continue_ticket: firstId }))
     .rejects.toThrow(/this project/)
