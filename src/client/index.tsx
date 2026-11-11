@@ -78,8 +78,11 @@ export function apply(ctx: ClientContext): void {
       (props: { wide?: boolean }) => <ProjectsSidebar {...props} t={t} open={session => { openSidebarSession(ctx, session) }} />)),
   ]
   let shown = views()
+  /** Once the plugin unloads its seats stay unregistered, even when a late poll or a cleanup reports them as wanted. */
+  let disposed = false
   /** @param enabled - whether the plugin's views belong on screen; the switch page itself stays registered below. */
   const reveal = (enabled: boolean): void => {
+    if (disposed) return
     if (enabled) { if (!shown.length) shown = views(); return }
     for (const dispose of shown.splice(0)) { try { dispose() } catch { /* A slot the shell already released. */ } }
   }
@@ -95,7 +98,12 @@ export function apply(ctx: ClientContext): void {
     }
     void read()
     const timer = setInterval(() => { void read() }, 4000)
-    return () => { live = false; clearInterval(timer); reveal(true) }
+    return () => {
+      live = false; clearInterval(timer)
+      // Unloading disposes the seats; it never registers them again.
+      for (const dispose of shown.splice(0)) { try { dispose() } catch { /* A slot the shell already released. */ } }
+      disposed = true
+    }
   }, 'dsh-superagent: plugin switch')
   ctx.slots.inject('plugins.row.config', () => ctx.slots.register({ name: 'plugins.row.config', key: `${ENTRY}#${ENTRY}`, locale: NS },
     (props: PluginConfigViewProps & { t: T }) => <PluginConfig t={props.t} view={props.view} form={props.form} />))

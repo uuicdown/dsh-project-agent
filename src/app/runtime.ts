@@ -332,8 +332,8 @@ export class Runtime extends Service implements SourceHost {
     this.closingFlag = true; const passes = this.passes.stop(); this.stopped.abort()
     try {
       this.assessor.stop()
-      const ids = [this.masterId, ...listProjects(this.store).map(project => routerSessionId(project.id)),
-        ...this.store.tickets.list().map(ticket => sessionOf(ticket))]
+      const ids = [...new Set([this.masterId, ...listProjects(this.store).map(project => routerSessionId(project.id)),
+        ...this.store.tickets.list().map(ticket => sessionOf(ticket))])]
       const agents = ids.map(id => this.ctx.agents.get(id as SessionId)).filter((agent): agent is Agent => agent !== undefined)
       for (const agent of agents) agent.cancel({ kind: 'user' }, { keepInbox: true })
       await Promise.allSettled([passes, this.effects.drain(), ...agents.map(agent => agent.whenIdle())])

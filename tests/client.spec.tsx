@@ -17,6 +17,8 @@ const t = ((key: keyof typeof zh, params?: Record<string, unknown>) => (zh[key] 
 function fixture(listed: string[]) {
   const entries: Entry[] = []
   const dictionaries: Record<string, unknown> = {}
+  // The cleanups the plugin's effects return, so a test can unload the plugin the way the shell does.
+  const cleanups: (() => void)[] = []
   const ctx = {
     slots: { inject: (_name: string, register: () => void) => register(),
       register: (options: Entry['options'], component: Entry['component']) => {
@@ -25,7 +27,7 @@ function fixture(listed: string[]) {
         return () => { const index = entries.indexOf(entry); if (index >= 0) entries.splice(index, 1) }
       } },
     locale: { register: (ns: string, value: unknown) => { dictionaries[ns] = value; return () => {} }, bind: () => t },
-    effect: (effect: () => unknown) => { effect() },
+    effect: (effect: () => unknown) => { const cleanup = effect(); if (typeof cleanup === 'function') cleanups.push(cleanup as () => void) },
     sessions: { list: { getSnapshot: () => ({ phase: 'ready', byId: Object.fromEntries(listed.map(id => [id, {}])) }) }, refresh: vi.fn(async () => {}) },
     uiWorkspace: { openSession: vi.fn() },
     // Omit config form service so Deployment renders read-only.
@@ -33,7 +35,7 @@ function fixture(listed: string[]) {
   }
   apply(ctx as never)
   const entry = (name: string) => entries.find(item => item.options.name === name)!
-  return { ctx, entries, dictionaries, main: entry('main'), nav: entry('sidebar.panellist'), projects: entry('sidebar.projects') }
+  return { ctx, entries, dictionaries, cleanups, main: entry('main'), nav: entry('sidebar.panellist'), projects: entry('sidebar.projects') }
 }
 async function render(entry: Entry, props: Record<string, unknown>) {
   const container = document.createElement('div'); document.body.append(container)
@@ -55,6 +57,14 @@ const serve = () => vi.stubGlobal('fetch', vi.fn(async (url: string) => {
   return Response.json({ error: 'unavailable' }, { status: 503 })
 }))
 afterEach(() => { vi.unstubAllGlobals() })
+
+it('leaves no seat registered once the plugin unloads, instead of putting the seats it just removed back', () => {
+  const { entries, cleanups } = fixture([])
+  expect(entries.map(item => item.options.name)).toContain('main')
+  for (const cleanup of cleanups) cleanup()
+  // Only the Plugin Manager page stays: unloading disposes the seats, it does not register them again.
+  expect(entries.map(item => item.options.name)).toEqual(['plugins.row.config'])
+})
 
 it('registers a localized main panel, sidebar entry and Plugin Manager row page, and no settings section', () => {
   const { entries, dictionaries, main, nav, projects } = fixture([])

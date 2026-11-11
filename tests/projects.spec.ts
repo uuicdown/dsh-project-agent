@@ -123,6 +123,28 @@ it('continues a dispatch in its worker Session under the same task line, and sho
   expect(page.dispatch).toMatchObject({ line: firstId, lineCount: 2 })
 })
 
+it('leaves a shared Session with its ticket when the continued launch cannot open it', async () => {
+  const header = (host.agents.get(host.runtime.masterId) as unknown as { session: { header: Record<string, unknown> } }).session.header
+  header.cwd = workspace()
+  const first = await host.runTool(host.runtime.masterId, 'project_dispatch',
+    { project: 'dsh', title: 'Fix the parser', task: 'Fix the parser', skills: [] })
+  await host.runtime.idle()
+  const firstId = (first.ticket as { ticket_id: string }).ticket_id
+  const sessionId = `worker-${firstId}`
+  const worker = await workerAgent(firstId) as unknown as { status: string }
+  worker.status = 'idle'
+  host.ctx.emit('agent/status', { agent: worker, status: 'idle' } as never)
+  await host.runtime.idle()
+  // Opening the Session fails, as a restarting host's Session controller does: the launch stops before it takes the Session up.
+  const open = vi.spyOn(host.runtime.sessions, 'ensure').mockRejectedValueOnce(new Error('session create failed'))
+  await host.runTool(host.runtime.masterId, 'project_dispatch',
+    { project: 'dsh', title: 'Add a test', task: 'Add a test', skills: [], continue_ticket: firstId })
+  await host.runtime.idle()
+  open.mockRestore()
+  // The earlier ticket keeps the Session: a launch that never started must not record it as owned by the ticket it was to run.
+  expect(host.runtime.sessions.ownerOf(sessionId)).toBe(firstId)
+})
+
 it('keeps one task line per continued chain, and refuses to hand its Session to another line', () => {
   const ticket = (id: string, lineId?: string): Pick<Ticket, 'id' | 'lineId'> => lineId === undefined ? { id } : { id, lineId }
   // A ticket that starts a line is its own root; a continued ticket carries the root it belongs to.

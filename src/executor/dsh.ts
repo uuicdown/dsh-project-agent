@@ -453,10 +453,12 @@ export class DshExecutor implements Executor {
     }
     if (!current()) return
     const sessionId = sessionOf(ticket)
+    // Open the Session first: a launch that aborts before it starts must leave the Session's ownership as it found it.
+    const agent = await this.host.sessions.ensure(sessionId, workspace, ticket.title, 'worker')
+    if (!current()) return
     // A Session a dispatch continued works for one ticket at a time: it takes this one up once its worker is idle, which
     // also makes its prompt and tools speak for this ticket rather than the one it worked for before.
     if (!await this.host.sessions.claim(sessionId, ticket.id)) throw new Later('The worker Session is working for another ticket')
-    const agent = await this.host.sessions.ensure(sessionId, workspace, ticket.title, 'worker')
     if (!current()) return
     // The background work of the Assignment this one replaces stops first, so its end does not clear this one's message.
     await this.stopped(ticket.id)

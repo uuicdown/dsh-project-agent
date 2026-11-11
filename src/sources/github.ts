@@ -130,13 +130,15 @@ async function watch(ctx: SourceContext, signal: AbortSignal): Promise<void> {
   await ctx.ready
   // Setup restarts dsh-superagent once it resolves the accounts; until then nothing is polled.
   if (!ctx.configured()) { ctx.report('github', health('paused', 'setupPending')); return }
+  let disabled = false
   while (!signal.aborted) {
-    // A disabled plugin keeps its Sources quiet until it is enabled again.
+    // A disabled plugin keeps its Sources quiet until it is enabled again; its state is reported once per episode.
     if (!ctx.enabled()) {
-      ctx.report('github', health('paused', 'pluginOff'))
+      if (!disabled) { ctx.report('github', health('paused', 'pluginOff')); disabled = true }
       await pause(2000, signal)
       continue
     }
+    disabled = false
     const config = ctx.config<GithubConfig>(SOURCE)
     try {
       if (config) interval = await pollRound(ctx, signal)
