@@ -209,3 +209,10 @@ An Eval in progress does not expire during a pause; its deadline moves later by 
 ### Invalid configuration
 
 A stored Source configuration that its kind rejects disables that Source instance.
+
+### The Router refuses the profile's own tools
+
+A Router Session runs under this bundle's router preset, but a profile mounts its own bundles' tools (agent team, terminal, memory)
+on every Session, and a preset cannot take them away. The host therefore refuses, by name, every tool a Router does not route with:
+only `orchestrator_*`, `project_dispatch` and `skill_search` run, and anything else answers that this is a Router Session and the work
+belongs in `project_dispatch`. A main Session that is not the router keeps the standard wait caps instead.
