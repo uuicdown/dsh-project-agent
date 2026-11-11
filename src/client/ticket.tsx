@@ -113,6 +113,8 @@ function DispatchDetails({ dispatch }: { dispatch: NonNullable<TicketPageView['d
     [t('dispatchSkills'), dispatch.skillsUnrestricted ? t('dispatchSkillsAll') : dispatch.skills.join(t('listSeparator'))],
   ]
   if (dispatch.model) rows.push([t('dispatchModel'), `${dispatch.model.provider} · ${dispatch.model.model}`])
+  rows.push([t('dispatchLine'), t('dispatchLineCount', { count: dispatch.lineCount })])
+  if (dispatch.continuedFrom) rows.push([t('dispatchContinuedFrom'), dispatch.continuedFrom])
   if (dispatch.dispatcher) rows.push([t('dispatchFrom'), <SessionButton variant="outline" sessionId={dispatch.dispatcher} />])
   return <Section title={t('dispatchDetails')} icon="shield">
     <KeyValues rows={rows} />

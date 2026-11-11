@@ -2,7 +2,7 @@
 import { liveTicket, threadKey, ticketStage, type AcceptMode, type AdmissionCell, type MandateBasis, type Ticket,
   type TicketStage } from '../../core/index.ts'
 import { sessionOf } from '../../executor/dsh.ts'
-import { listProjects } from '../projects.ts'
+import { lineOf, listProjects } from '../projects.ts'
 import type { Store } from '../store.ts'
 import { channelLink, decisionView, newestFirst, page, snapshot, threadSummary, ticketLine, type Snapshot,
   type ViewHost } from './records.ts'
@@ -83,6 +83,8 @@ export function ticketDetail(host: ViewHost, id: string) {
     // A dispatch that continues an earlier one runs in that dispatch's worker Session and says which one it continues.
     ...dispatched ? { dispatch: { project: project?.name ?? ticket.projectId ?? '', session: sessionOf(ticket),
       ...ticket.continuedFrom ? { continuedFrom: ticket.continuedFrom } : {},
+      line: lineOf(ticket),
+      lineCount: store.tickets.list().filter(item => lineOf(item) === lineOf(ticket)).length,
       skills: [...ticket.skills ?? []], skillsUnrestricted: !ticket.skills?.length, ...ticket.model ? { model: ticket.model } : {},
       ...ticket.dispatcher ? { dispatcher: ticket.dispatcher } : {} } } : {},
     // Every started Assignment ran in the ticket's worker Session, which a dispatch may share with the one it continues. A

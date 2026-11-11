@@ -295,6 +295,11 @@ export interface Ticket {
    */
   session?: string
   /**
+   * The dispatch that started this ticket's task line: the chain of dispatches a person means by "carry on with that". Absent
+   * when this ticket starts a line. A worker Session serves one task line, so a continuation may not cross lines.
+   */
+  lineId?: string
+  /**
    * The earlier dispatch whose Executor Session this ticket continues, when the router judged the request to follow on from
    * that work. It records the continuity; the earlier ticket keeps its own state, and its reports are unchanged.
    */

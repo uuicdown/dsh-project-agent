@@ -9,7 +9,7 @@ import { IM_WORDS, NOTE_WORDS, wordCount } from '../../infra/text.ts'
 import { AssessmentSchema, EvalReadSchema, WorktreeNameSchema, type MasterAssessor } from '../assessment.ts'
 import { ticketCard } from '../cards.ts'
 import { PromptConfigSchema, savePrompts, type Prompts } from '../prompts.ts'
-import { ensureProject, dispatchBriefing, projectByPath, type ProjectRecord } from '../projects.ts'
+import { ensureProject, dispatchBriefing, lineOf, projectByPath, taskLineRefusal, type ProjectRecord } from '../projects.ts'
 import { sessionOf } from '../../executor/dsh.ts'
 import { readResource, type MainResourceHost, type ResourceHost } from '../resources.ts'
 import type { Sessions } from '../sessions.ts'
@@ -26,7 +26,7 @@ export interface MainToolsHost {
   readonly engine: Pick<EngineForMainSession, 'decide' | 'dispatch' | 'attach' | 'reply' | 'requestStatus' | 'note'> & EngineForPeople
   readonly store: Pick<Store, 'tickets' | 'triggers' | 'threads' | 'atomic' | 'replyStatus' | 'settings' | 'get' | 'set'>
   readonly prompts: Pick<Prompts, 'preview' | 'save'>
-  readonly sessions: Pick<Sessions, 'status' | 'notify' | 'delivery' | 'modelRetry'>
+  readonly sessions: Pick<Sessions, 'status' | 'notify' | 'delivery' | 'modelRetry' | 'ownerOf'>
   readonly settings: Pick<Settings, 'view' | 'block' | 'save' | 'pause' | 'sync'>
   readonly assessor: Pick<MasterAssessor, 'context' | 'read' | 'decide'>
   readonly resources: ResourceHost
@@ -357,6 +357,10 @@ export function mainTools(host: MainToolsHost, agent: Agent): Tool[] {
           if (status === 'running') {
             throw new Error('That dispatch\'s worker Session is running: continue it once its worker hands off, or dispatch this work in a new Session')
           }
+          // A worker Session carries one task line: continuing a dispatch whose Session now serves another line would mix both.
+          const owner = host.sessions.ownerOf(sessionOf(continued))
+          const refusal = taskLineRefusal(continued, owner === undefined ? undefined : host.store.tickets.get(owner))
+          if (refusal) throw new Error(refusal)
         }
         // A dispatch that continues an earlier one starts in that Session's conversation; every other starts with the project's briefing.
         const earlier = host.store.tickets.list().filter(ticket => ticket.projectId === project.id)
@@ -370,14 +374,14 @@ export function mainTools(host: MainToolsHost, agent: Agent): Tool[] {
           const ticket = host.quietly(() => host.engine.dispatch({
             project: project.name, projectId: project.id, title: args.title, text, name: 'task', directory: cwd, skills: args.skills, model,
             dispatcher: agent.id,
-            ...continued ? { session: sessionOf(continued), continuedFrom: continued.id } : {},
+            ...continued ? { session: sessionOf(continued), continuedFrom: continued.id, lineId: lineOf(continued) } : {},
           }))
           host.requestPass()
           // Answer what the dispatch chose, so the person can see the skills, the model route and the Session it started or continued.
           return { decision: 'accept', reason: 'Dispatched', ticket: ticketCard(ticket), dispatch: {
             project: project.name, project_id: project.id, session: sessionOf(ticket), skills: [...ticket.skills ?? []],
             skills_unrestricted: !ticket.skills?.length, model: model ?? null, briefing: continued ? 0 : earlier.length,
-            ...continued ? { continued_from: continued.id } : {}, dispatcher: agent.id } }
+            line: lineOf(ticket), ...continued ? { continued_from: continued.id } : {}, dispatcher: agent.id } }
         } catch (error) {
           throw error
         }

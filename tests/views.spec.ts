@@ -309,8 +309,10 @@ it('shows the dispatch a ticket came from: its project, the skills it may use, i
     inputs: [] as never[], projectId: 'project-0123456789ab', skills: ['gongwen', 'office'], dispatcher: 'orchestrator-chat',
     model: { provider: 'deepseek', model: 'deepseek-v4' } }
   store.tickets.save(dispatched)
+  // The dispatch belongs to a task line of its own, which the panel shows as the line's first dispatch.
   expect(ticketDetail(host, 't1')!.dispatch).toEqual({ project: '旋转词', session: 'worker-t1', skills: ['gongwen', 'office'],
-    skillsUnrestricted: false, dispatcher: 'orchestrator-chat', model: { provider: 'deepseek', model: 'deepseek-v4' } })
+    skillsUnrestricted: false, dispatcher: 'orchestrator-chat', model: { provider: 'deepseek', model: 'deepseek-v4' },
+    line: 't1', lineCount: 1 })
   // An unrestricted ticket says so rather than looking like it got no skills at all.
   store.tickets.save({ ...dispatched, skills: undefined })
   expect(ticketDetail(host, 't1')!.dispatch).toMatchObject({ skills: [], skillsUnrestricted: true })

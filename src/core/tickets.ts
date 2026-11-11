@@ -32,6 +32,8 @@ export interface DispatchOptions {
   /** The Executor Session the dispatch continues, and the earlier dispatch whose work it continues. */
   session?: string
   continuedFrom?: string
+  /** The dispatch that started this ticket's task line; absent when the ticket starts one. */
+  lineId?: string
 }
 
 /**
@@ -74,12 +76,12 @@ export class Tickets extends EnginePart {
    * involved; the ticket's origin names the dispatch itself.
    */
   createDirect(id: string, title: string, scope: string, task: string, actor: ActorRef, at: string, options: DispatchOptions = {}): Ticket {
-    const { skills, model, directory, projectId, dispatcher, session, continuedFrom } = options
+    const { skills, model, directory, projectId, dispatcher, session, continuedFrom, lineId } = options
     const mandate: Mandate = { strength: 'explicit', policyVersion: 'dispatch', basis: { via: 'listed', addressed: 'direct' }, actor, scope }
     const draft: Ticket = { id, title, decisionId: id, mandate, channels: [], assignments: [], inputs: [], undelivered: [],
       createdAt: at, updatedAt: at, origin: { triggerId: id, triggerIds: [] }, ...(skills?.length ? { skills } : {}), ...(model ? { model } : {}),
       ...(projectId ? { projectId } : {}), ...(dispatcher ? { dispatcher } : {}), ...(session ? { session } : {}),
-      ...(continuedFrom ? { continuedFrom } : {}) }
+      ...(continuedFrom ? { continuedFrom } : {}), ...(lineId ? { lineId } : {}) }
     // The Executor's prepare assigns the workspace directory; the dispatch carries its own assignment text instead of a trigger.
     const prepared = this.options.prepareTicket?.(draft, { kind: 'accept', title, scope, name: 'task', reason: { code: 'explicitRouted' } })
     const execution = prepared?.execution === undefined ? undefined : {

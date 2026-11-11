@@ -42,6 +42,18 @@ function folder(path: string): string {
 /** The path a project records, without the trailing separators that would make one workspace look like two. */
 const directory = (path: string): string => path.replace(/[\\/]+$/, '')
 
+/** The task line a dispatch belongs to: the ticket that started it, or the ticket itself when it starts one. */
+export function lineOf(ticket: Pick<Ticket, 'id' | 'lineId'>): string { return ticket.lineId ?? ticket.id }
+
+/**
+ * Why a dispatch may not continue `continued`, or undefined when it may: a worker Session carries one task line, so a Session
+ * that now serves another line refuses the continuation instead of mixing the two lines' context.
+ */
+export function taskLineRefusal(continued: Pick<Ticket, 'id' | 'lineId'>, owner: Pick<Ticket, 'id' | 'lineId'> | undefined): string | undefined {
+  if (owner === undefined || lineOf(owner) === lineOf(continued)) return undefined
+  return `That dispatch's worker Session now serves another task line (started by ${lineOf(owner)}): start this work in a new Session`
+}
+
 /** The record id of a project created under `key`; the hash keeps it short and free of the name's own characters. */
 export function projectId(key: string): string { return `project-${createHash('sha1').update(key).digest('hex').slice(0, 12)}` }
 

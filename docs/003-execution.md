@@ -210,6 +210,13 @@ An Eval in progress does not expire during a pause; its deadline moves later by 
 
 A stored Source configuration that its kind rejects disables that Source instance.
 
+### Task lines
+
+A dispatch that continues an earlier one belongs to that dispatch's task line: the chain a person means by "carry on with that". The
+ticket records `lineId`, the dispatch that started the line, and a worker Session carries one task line at a time. A continuation of
+a dispatch whose Session now serves another line is refused rather than mixing two lines' context, and the ticket page shows how far
+along its line a dispatch is. The Router's tool allowlist is the set of tools the decoration registered, so a tool added to the plugin
+is never refused by a list that was not updated with it.
 ### The Router refuses the profile's own tools
 
 A Router Session runs under this bundle's router preset, but a profile mounts its own bundles' tools (agent team, terminal, memory)

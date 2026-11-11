@@ -1578,6 +1578,9 @@ it('refuses the tools a rich profile mounts on a Router Session, and keeps the m
     expect(router({ name, arguments: {} }), name).toMatch(/Router Session/)
   for (const name of ['project_dispatch', 'skill_search', 'orchestrator_read', 'orchestrator_route', 'orchestrator_reply'])
     expect(router({ name, arguments: {} }), name).toBeUndefined()
+  // The allowlist is the tools this Session registered, so every one of them passes: a tool added to the plugin cannot be refused
+  // by a list that was not updated with it.
+  for (const name of tools.get(runtime.masterId)!.keys()) expect(router({ name, arguments: {} }), name).toBeUndefined()
 })
 
 

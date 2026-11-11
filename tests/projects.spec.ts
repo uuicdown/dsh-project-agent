@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { ensureProject, dispatchBriefing, dispatchHistory, isRouterSession, listProjects, projectByPath, projectByName, projectView,
+import { ensureProject, dispatchBriefing, dispatchHistory, isRouterSession, lineOf, listProjects, projectByPath, projectByName, projectView,
+  taskLineRefusal,
   renameProject, routerSessionId, routerTitle } from '../src/app/projects.ts'
 import type { Ticket } from '../src/core/index.ts'
 import { Store } from '../src/app/store.ts'
@@ -94,6 +95,47 @@ it('briefs a new worker on the project\'s latest dispatches, oldest first, with 
     `Task ${index}`))).map(item => item.title)).toEqual(['Task 4', 'Task 5', 'Task 6', 'Task 7', 'Task 8', 'Task 9', 'Task 10', 'Task 11'])
 })
 
+it('continues a dispatch in its worker Session under the same task line, and shows how far along the line it is', async () => {
+  const header = (host.agents.get(host.runtime.masterId) as unknown as { session: { header: Record<string, unknown> } }).session.header
+  header.cwd = workspace()
+  const first = await host.runTool(host.runtime.masterId, 'project_dispatch',
+    { project: 'dsh', title: 'Fix the parser', task: 'Fix the parser', skills: [] })
+  await host.runtime.idle()
+  const firstId = (first.ticket as { ticket_id: string }).ticket_id
+  const firstDispatch = first.dispatch as { line: string }
+  expect(firstDispatch.line).toBe(firstId)
+  // The worker handed off: its turn ended, so its Session is idle between turns.
+  const worker = await workerAgent(firstId) as unknown as { status: string }
+  worker.status = 'idle'
+  host.ctx.emit('agent/status', { agent: worker, status: 'idle' } as never)
+  await host.runtime.idle()
+  const second = await host.runTool(host.runtime.masterId, 'project_dispatch',
+    { project: 'dsh', title: 'Add a test for the parser', task: 'Add a test for the parser', skills: [], continue_ticket: firstId })
+  await host.runtime.idle()
+  const secondId = (second.ticket as { ticket_id: string }).ticket_id
+  const ticket = host.runtime.store.tickets.get(secondId)!
+  // The continuation carries the line the earlier dispatch started, and runs in the same worker Session.
+  expect(ticket.lineId).toBe(firstId)
+  expect(ticket.continuedFrom).toBe(firstId)
+  expect(ticket.session).toBe(`worker-${firstId}`)
+  expect((second.dispatch as { line: string }).line).toBe(firstId)
+  const page = (await host.api('GET', `tickets/${secondId}`)).body as { dispatch: { line: string; lineCount: number } }
+  expect(page.dispatch).toMatchObject({ line: firstId, lineCount: 2 })
+})
+
+it('keeps one task line per continued chain, and refuses to hand its Session to another line', () => {
+  const ticket = (id: string, lineId?: string): Pick<Ticket, 'id' | 'lineId'> => lineId === undefined ? { id } : { id, lineId }
+  // A ticket that starts a line is its own root; a continued ticket carries the root it belongs to.
+  expect(lineOf(ticket('a'))).toBe('a')
+  expect(lineOf(ticket('b', 'a'))).toBe('a')
+  // A Session with no owner, its own ticket, or a ticket of the same line may continue.
+  expect(taskLineRefusal(ticket('x') as Ticket, undefined)).toBeUndefined()
+  expect(taskLineRefusal(ticket('x') as Ticket, ticket('x') as Ticket)).toBeUndefined()
+  expect(taskLineRefusal(ticket('x', 'a') as Ticket, ticket('m', 'a') as Ticket)).toBeUndefined()
+  // A Session that now serves another line refuses the continuation.
+  expect(taskLineRefusal(ticket('x', 'a') as Ticket, ticket('m', 'z') as Ticket)).toMatch(/another task line/)
+})
+
 let host: Host
 // Standalone is the project-workspace deployment: it is where a project has a Router Session of its own.
 beforeEach(async () => { host = await startRuntime(undefined, { standalone: true }) })
@@ -155,7 +197,7 @@ it('shows what a dispatch chose, and starts each new worker with the project\'s 
   const firstId = (first.ticket as { ticket_id: string }).ticket_id
   // What the dispatch chose is reported back, so a person can see the skills and the model the ticket got.
   expect(first.dispatch).toEqual({ project: 'dsh-spinner-words', project_id: expect.stringMatching(/^project-/), session: `worker-${firstId}`,
-    skills: ['gongwen'], skills_unrestricted: false, model: null, briefing: 0, dispatcher: host.runtime.masterId })
+    skills: ['gongwen'], skills_unrestricted: false, model: null, briefing: 0, dispatcher: host.runtime.masterId, line: firstId })
   const second = await host.runTool(host.runtime.masterId, 'project_dispatch',
     { project: 'dsh-spinner-words', title: 'Add the install note', task: 'Add the install note', skills: [] })
   await host.runtime.idle()

@@ -79,14 +79,12 @@ const SLEEP = /(?:^|[;&|({!`\n]|\b(?:do|then|else|elif|if|while|until|time|exec|
  * a command 60 seconds and a job wait lasts 30 seconds by default, so a command needs a timeout or the background, and a
  * job wait its timeout; the router preset ends both after 5 seconds.
  */
-/** Tools a Router Session may call besides its own: the dispatch and the skill search. Everything else is refused by name. */
-const ROUTER_CALLS = new Set(['project_dispatch', 'skill_search'])
-const routerTool = (name: string): boolean => name.startsWith('orchestrator_') || ROUTER_CALLS.has(name)
 /**
  * Why a Router may not call `name`, or undefined for the tools it routes with. A profile mounts its own bundles' tools on every
- * Session whatever preset it runs, so the router's minimal toolset has to be enforced here instead of by the preset.
+ * Session whatever preset it runs, so the router's minimal toolset has to be enforced here instead of by the preset; `allowed`
+ * is what this decoration registered, so the list cannot drift from the registration.
  */
-const routerRefusal = (name: string): string | undefined => routerTool(name) ? undefined
+const routerRefusal = (name: string, allowed: ReadonlySet<string>): string | undefined => allowed.has(name) ? undefined
   : `This is a Router Session: "${name}" is not available here. Dispatch the work with project_dispatch instead of doing it yourself.`
 
 function noWait({ name, arguments: input }: { name: string; arguments: unknown }, routed: () => boolean): string | undefined {
@@ -357,7 +355,9 @@ export class Sessions {
       // A rich profile mounts its own bundles' tools (agent team, terminal, memory) on every Session, and a preset cannot take
       // them away, so a Router refuses them by name: it dispatches instead of working itself or calling a teammate. A main
       // Session that is not the router keeps the standard wait caps.
-      binding.disposers.push(agent.ctx.tools.guard(execution => this.routed(agent) ? routerRefusal(execution.name) : noWait(execution, () => false)))
+      const allowed = new Set(ownTools.map(tool => tool.name))
+      binding.disposers.push(agent.ctx.tools.guard(execution =>
+        this.routed(agent) ? routerRefusal(execution.name, allowed) : noWait(execution, () => false)))
     } else {
       // Workers keep the profile's default preset: its work-tool plugins mount from the host, while a preset declared
       // in this profile cannot resolve the core plugin packages (their baseUrl would be the profile directory).
