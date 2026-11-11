@@ -34,6 +34,15 @@ function HammerIcon({ size }: SidebarPanelIconOwnerProps) {
   </svg>
 }
 
+/**
+ * Opens a Session from the sidebar seat. A Session the shell cannot list yet is left for its next poll instead of raising an
+ * error in a seat that has no place to show one.
+ */
+function openSidebarSession(ctx: ClientContext, sessionId: string): void {
+  openKnownSession(ctx.sessions, sessionId as SessionId, target => { ctx.uiWorkspace.openSession(target) },
+    new AbortController().signal).catch(() => { /* the seat polls the same list again */ })
+}
+
 /** Mounted panel wrapper; cancels any pending Session navigation when a new one starts or the panel unmounts. */
 function Mounted({ ctx, t }: { ctx: ClientContext; t: T }) {
   const pending = useRef<AbortController>(undefined)
@@ -53,15 +62,49 @@ function Mounted({ ctx, t }: { ctx: ClientContext; t: T }) {
 }
 
 export const inject = ['slots', 'locale', 'sessions', 'uiWorkspace']
-/** Registers the panel, sidebar icon, and Plugin Manager config view; `configForms` is optional (without it, machine settings are read-only). */
+/**
+ * Registers the panel, sidebar icon, and Plugin Manager config view. The three views a disabled plugin hides (the panel, the
+ * sidebar icon and the project seat) are registered and disposed as `GET state` reports the flag; the Plugin Manager page keeps
+ * the switch, so a disabled plugin can always be turned back on. `configForms` is optional (without it, machine settings are read-only).
+ */
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-superagent: dictionaries')
   const t = ctx.locale.bind(NS)
-  ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: PANEL_ID, locale: NS, inject: () => ({}) },
-    (props: { t: T }) => <Mounted ctx={ctx} t={props.t} />))
-  ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({ name: 'sidebar.panellist', id: PANEL_ID, order: 10, label: () => t('panel'), locale: NS }, HammerIcon))
-  ctx.slots.inject('sidebar.projects', () => ctx.slots.register({ name: 'sidebar.projects', id: `${ENTRY}-projects`, order: 10, label: () => t('panel'), locale: NS },
-    (props: { wide?: boolean }) => <ProjectsSidebar {...props} t={t} />))
+  const views = (): (() => void)[] => [
+    ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: PANEL_ID, locale: NS, inject: () => ({}) },
+      (props: { t: T }) => <Mounted ctx={ctx} t={props.t} />)),
+    ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({ name: 'sidebar.panellist', id: PANEL_ID, order: 10, label: () => t('panel'), locale: NS }, HammerIcon)),
+    ctx.slots.inject('sidebar.projects', () => ctx.slots.register({ name: 'sidebar.projects', id: `${ENTRY}-projects`, order: 10, label: () => t('panel'), locale: NS },
+      (props: { wide?: boolean }) => <ProjectsSidebar {...props} t={t} open={session => { openSidebarSession(ctx, session) }} />)),
+  ]
+  let shown = views()
+  /** Once the plugin unloads its seats stay unregistered, even when a late poll or a cleanup reports them as wanted. */
+  let disposed = false
+  /** @param enabled - whether the plugin's views belong on screen; the switch page itself stays registered below. */
+  const reveal = (enabled: boolean): void => {
+    if (disposed) return
+    if (enabled) { if (!shown.length) shown = views(); return }
+    for (const dispose of shown.splice(0)) { try { dispose() } catch { /* A slot the shell already released. */ } }
+  }
+  ctx.effect(() => {
+    let live = true
+    const read = async (): Promise<void> => {
+      try {
+        const response = await fetch('/orchestrator/api/state', { headers: { 'x-orchestrator-request': '1' } })
+        if (!response.ok) return
+        const state = await response.json() as { enabled?: boolean }
+        if (live) reveal(state.enabled !== false)
+      } catch { /* A host that is restarting keeps the current views. */ }
+    }
+    void read()
+    const timer = setInterval(() => { void read() }, 4000)
+    return () => {
+      live = false; clearInterval(timer)
+      // Unloading disposes the seats; it never registers them again.
+      for (const dispose of shown.splice(0)) { try { dispose() } catch { /* A slot the shell already released. */ } }
+      disposed = true
+    }
+  }, 'dsh-superagent: plugin switch')
   ctx.slots.inject('plugins.row.config', () => ctx.slots.register({ name: 'plugins.row.config', key: `${ENTRY}#${ENTRY}`, locale: NS },
     (props: PluginConfigViewProps & { t: T }) => <PluginConfig t={props.t} view={props.view} form={props.form} />))
 }

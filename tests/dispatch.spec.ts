@@ -40,6 +40,28 @@ describe('dispatch', () => {
     expect(h.launches[0]![0].id).toBe(ticket.id)
   })
 
+  it('records the main Session that dispatched the ticket, so its reports go back there', () => {
+    const h = harness()
+    const ticket = h.engine.dispatch({ project: 'p1', title: 'Write the notice', text: 'Draft a notice', name: 'task', dispatcher: 'chat-main' })
+    expect(ticket.dispatcher).toBe('chat-main')
+    expect(h.repo.tickets.get(ticket.id)?.dispatcher).toBe('chat-main')
+    // A dispatch from no Session keeps none, and its reports go to the main Session as before.
+    expect(h.engine.dispatch({ project: 'p1', title: 'Other', text: 'Other', name: 'task' })).not.toHaveProperty('dispatcher')
+  })
+
+  it('records the Session a dispatch continues and the earlier dispatch it continues', () => {
+    const h = harness()
+    const first = h.engine.dispatch({ project: 'p1', title: 'Draft the notice', text: 'Draft a notice', name: 'task' })
+    const second = h.engine.dispatch({ project: 'p1', title: 'Add the note', text: 'Add the note', name: 'task',
+      session: `worker-${first.id}`, continuedFrom: first.id })
+    expect(second).toMatchObject({ session: `worker-${first.id}`, continuedFrom: first.id })
+    expect(h.repo.tickets.get(second.id)).toMatchObject({ session: `worker-${first.id}`, continuedFrom: first.id })
+    // A dispatch that continues nothing starts with no Session and no earlier dispatch.
+    const third = h.engine.dispatch({ project: 'p1', title: 'Other', text: 'Other', name: 'task' })
+    expect(third.session).toBeUndefined()
+    expect(third.continuedFrom).toBeUndefined()
+  })
+
   it('records the project a dispatch belongs to, and leaves it out when there is none', () => {
     const h = harness()
     const ticket = h.engine.dispatch({ project: 'dsh-spinner-words', projectId: 'project-0123456789ab',

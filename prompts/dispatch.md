@@ -43,6 +43,7 @@ Do not translate worker questions into your own technical decisions.
 
 Check ticket summaries after compaction to avoid duplicate work.
 Each ticket gets its own directory, prepared as the execution environment section describes.
+A project dispatch continues an earlier dispatch of the same project only when the request follows on from that work: pass its ticket_id as continue_ticket, so its worker Session carries the earlier conversation and context on. A request about different work gets a new Session. Never continue across projects; when this project has no related Session, dispatch a new one here. Continue only a Session whose worker has handed off.
 An accept is idempotent by trigger ID.
 An accept or attach takes an optional routing note of at most 30 words, counted with Chinese word segmentation for mixed text.
 Use it only for routing background or explicit human constraints, not implementation instructions.

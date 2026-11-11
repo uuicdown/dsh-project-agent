@@ -45,14 +45,18 @@ async function watch(ctx: SourceContext, signal: AbortSignal): Promise<void> {
   // Setup restarts dsh-superagent once it resolves the bot; until then nothing runs.
   if (!available(ctx)) return
   let retry: number | undefined
+  // The pause a loop reports, so a disabled plugin or Source is announced once per episode instead of every poll.
+  let paused: string | undefined
   while (!signal.aborted) {
-    if (!enabled(ctx)) {
-      ctx.report('feishu', health('paused', 'sourceOff'))
+    if (!ctx.enabled() || !enabled(ctx)) {
+      const code = ctx.enabled() ? 'sourceOff' : 'pluginOff'
+      if (paused !== code) { ctx.report('feishu', health('paused', code)); paused = code }
       await delay(5000, undefined, { signal }).catch(() => {})
       continue
     }
+    paused = undefined
     const running = new AbortController()
-    const check = setInterval(() => { if (!enabled(ctx)) running.abort() }, 5000)
+    const check = setInterval(() => { if (!ctx.enabled() || !enabled(ctx)) running.abort() }, 5000)
     const stop = () => running.abort()
     signal.addEventListener('abort', stop, { once: true })
     const began = Date.now()

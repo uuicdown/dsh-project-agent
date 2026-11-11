@@ -11,14 +11,23 @@ declare global { var IS_REACT_ACT_ENVIRONMENT: boolean }
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
 type Entry = { options: { name: string; id?: string; key?: string; order?: number; locale?: string; label?: () => string }; component: ComponentType<Record<string, unknown>> }
-const t = ((key: keyof typeof zh) => zh[key] ?? key) as never
+/** The dictionary of the sidebar seat's locale, with the `{name}` template params the real translate fills in. */
+const t = ((key: keyof typeof zh, params?: Record<string, unknown>) => (zh[key] ?? key)
+  .replace(/\{(\w+)\}/g, (whole, name: string) => name in (params ?? {}) ? String(params![name]) : whole)) as never
 function fixture(listed: string[]) {
   const entries: Entry[] = []
   const dictionaries: Record<string, unknown> = {}
+  // The cleanups the plugin's effects return, so a test can unload the plugin the way the shell does.
+  const cleanups: (() => void)[] = []
   const ctx = {
-    slots: { inject: (_name: string, register: () => void) => register(), register: (options: Entry['options'], component: Entry['component']) => { entries.push({ options, component }); return () => {} } },
+    slots: { inject: (_name: string, register: () => void) => register(),
+      register: (options: Entry['options'], component: Entry['component']) => {
+        const entry = { options, component }
+        entries.push(entry)
+        return () => { const index = entries.indexOf(entry); if (index >= 0) entries.splice(index, 1) }
+      } },
     locale: { register: (ns: string, value: unknown) => { dictionaries[ns] = value; return () => {} }, bind: () => t },
-    effect: (effect: () => unknown) => { effect() },
+    effect: (effect: () => unknown) => { const cleanup = effect(); if (typeof cleanup === 'function') cleanups.push(cleanup as () => void) },
     sessions: { list: { getSnapshot: () => ({ phase: 'ready', byId: Object.fromEntries(listed.map(id => [id, {}])) }) }, refresh: vi.fn(async () => {}) },
     uiWorkspace: { openSession: vi.fn() },
     // Omit config form service so Deployment renders read-only.
@@ -26,7 +35,7 @@ function fixture(listed: string[]) {
   }
   apply(ctx as never)
   const entry = (name: string) => entries.find(item => item.options.name === name)!
-  return { ctx, entries, dictionaries, main: entry('main'), nav: entry('sidebar.panellist'), projects: entry('sidebar.projects') }
+  return { ctx, entries, dictionaries, cleanups, main: entry('main'), nav: entry('sidebar.panellist'), projects: entry('sidebar.projects') }
 }
 async function render(entry: Entry, props: Record<string, unknown>) {
   const container = document.createElement('div'); document.body.append(container)
@@ -48,6 +57,14 @@ const serve = () => vi.stubGlobal('fetch', vi.fn(async (url: string) => {
   return Response.json({ error: 'unavailable' }, { status: 503 })
 }))
 afterEach(() => { vi.unstubAllGlobals() })
+
+it('leaves no seat registered once the plugin unloads, instead of putting the seats it just removed back', () => {
+  const { entries, cleanups } = fixture([])
+  expect(entries.map(item => item.options.name)).toContain('main')
+  for (const cleanup of cleanups) cleanup()
+  // Only the Plugin Manager page stays: unloading disposes the seats, it does not register them again.
+  expect(entries.map(item => item.options.name)).toEqual(['plugins.row.config'])
+})
 
 it('registers a localized main panel, sidebar entry and Plugin Manager row page, and no settings section', () => {
   const { entries, dictionaries, main, nav, projects } = fixture([])
@@ -148,7 +165,7 @@ it('tells a dsh-superagent that does not answer from a record it does not have, 
 it('groups the sidebar by project, names each project, and renames one in place without moving its tickets', async () => {
   const renamed: { path: string; body: unknown }[] = []
   const listed = [{ id: 'project-a1b2c3d4e5f6', key: 'dsh-spinner-words', name: 'dsh-spinner-words', path: '/w/default-workspace',
-    createdAt: '2026-01-01T00:00:00Z' }]
+    createdAt: '2026-01-01T00:00:00Z', sessionId: 'router-project-a1b2c3d4e5f6' }]
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
     const path = new URL(url, 'http://127.0.0.1').pathname.replace('/orchestrator/api/', '')
     if (init?.method === 'PATCH') { renamed.push({ path, body: JSON.parse(String(init.body)) }); return Response.json(listed[0]) }
@@ -161,11 +178,20 @@ it('groups the sidebar by project, names each project, and renames one in place 
   const { projects } = fixture([])
   const view = await render(projects, { wide: true })
   const text = () => view.container.textContent ?? ''
-  // The project's own name heads its tickets, and a ticket it does not claim falls under the unassigned group.
+  // The project heads the Router Session the plugin opened for it, and its worker Sessions stay folded away until asked for.
   expect(text()).toContain('dsh-spinner-words')
-  expect(text()).toContain('修复回归')
+  expect(text()).toContain(zh.routerSession)
+  expect(text()).not.toContain('修复回归')
+  // A ticket the project does not claim is listed under the unassigned group as it is.
   expect(text()).toContain(zh.unassignedTickets)
   expect(text()).toContain('派单前的老工单')
+  const subSessions = zh.childSessions.replace('{count}', '1')
+  const toggles = [...view.container.querySelectorAll('div')].filter(item => item.textContent?.endsWith(subSessions))
+  // The last match is the disclosure row itself; the ones before it are its ancestors, whose text ends the same way.
+  const workers = toggles.at(-1)
+  expect(workers, view.container.innerHTML).toBeDefined()
+  await act(async () => { workers!.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
+  expect(text()).toContain('修复回归')
   expect(view.container.querySelectorAll('input')).toHaveLength(0)
   const heading = [...view.container.querySelectorAll('span')].find(item => item.textContent === 'dsh-spinner-words')!
   await act(async () => { heading.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })) })
@@ -184,4 +210,28 @@ it('groups the sidebar by project, names each project, and renames one in place 
   for (let i = 0; i < 5; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
   expect(renamed).toEqual([{ path: 'projects/project-a1b2c3d4e5f6', body: { name: '旋转词插件' } }])
   view.dispose()
+})
+
+it('hides the panel, the sidebar icon and the project seat while the plugin is disabled, and shows them again once it is on', async () => {
+  vi.useFakeTimers()
+  let enabled = false
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    const path = new URL(url, 'http://127.0.0.1').pathname.replace('/orchestrator/api/', '')
+    return path === 'state' ? Response.json({ enabled }) : Response.json({})
+  }))
+  const { entries } = fixture([])
+  const names = () => entries.map(entry => entry.options.name)
+  // The switch page is registered before the first read, and stays while the rest goes away.
+  expect(names()).toContain('plugins.row.config')
+  await vi.advanceTimersByTimeAsync(10)
+  expect(names()).toEqual(['plugins.row.config'])
+  enabled = true
+  await vi.advanceTimersByTimeAsync(4000)
+  // The switch page was registered first, so the three views join it; slot order comes from each registration's `order`.
+  expect([...names()].sort()).toEqual(['main', 'plugins.row.config', 'sidebar.panellist', 'sidebar.projects'])
+  // A host that cannot answer keeps the current views instead of dropping them.
+  vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch') }))
+  await vi.advanceTimersByTimeAsync(4000)
+  expect(names()).toContain('main')
+  vi.useRealTimers()
 })

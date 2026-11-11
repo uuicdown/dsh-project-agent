@@ -9,6 +9,8 @@ export interface PassesHost {
   readonly health: HealthEntry
   readonly lifetime: AbortSignal
   configured(): boolean
+  /** False while the plugin is disabled: no pass runs and no trigger is taken in. */
+  enabled(): boolean
   closing(): boolean
 }
 
@@ -33,6 +35,8 @@ export class Passes {
   }
   receive(trigger: Trigger): ReceiveResult {
     if (this.host.closing()) throw new Error('Orchestrator is stopping')
+    // A disabled plugin takes nothing in, so a source re-offers what it read once it is enabled again.
+    if (!this.host.enabled()) return 'filtered'
     const result = this.host.engine.receive(trigger)
     if (result === 'stored') this.request()
     return result
@@ -55,7 +59,7 @@ export class Passes {
   /** Run one pass, coalescing concurrent callers into a single follow-up pass. */
   async pump(): Promise<void> {
     // Do not assess, dispatch, or send while waiting for setup; queued work waits for the restart that completes setup.
-    if (!this.host.configured() || this.host.closing()) return
+    if (!this.host.enabled() || !this.host.configured() || this.host.closing()) return
     if (!this.pumping) return this.pumping = this.pumpOnce().finally(() => { this.pumping = undefined })
     const next = () => { this.pumpAgain = undefined; return this.pump() }
     return this.pumpAgain ??= this.pumping.then(next, next)

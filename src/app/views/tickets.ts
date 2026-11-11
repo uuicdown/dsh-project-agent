@@ -1,7 +1,8 @@
 /** Ticket list, ticket detail, mandate basis formatting, and executor load views. */
 import { liveTicket, threadKey, ticketStage, type AcceptMode, type AdmissionCell, type MandateBasis, type Ticket,
   type TicketStage } from '../../core/index.ts'
-import { workerSessionId } from '../../executor/dsh.ts'
+import { sessionOf } from '../../executor/dsh.ts'
+import { lineOf, listProjects } from '../projects.ts'
 import type { Store } from '../store.ts'
 import { channelLink, decisionView, newestFirst, page, snapshot, threadSummary, ticketLine, type Snapshot,
   type ViewHost } from './records.ts'
@@ -71,12 +72,24 @@ export function ticketDetail(host: ViewHost, id: string) {
   }
   // Pass `human = false` for bot-originated mandates so the Source kind still labels the actor as a bot if removed from the policy list.
   const human = ticket.mandate.basis.via !== 'bot'
+  // A dispatch names what it chose; a Source-accepted ticket has none of these and shows no dispatch section.
+  const dispatched = ticket.dispatcher !== undefined || ticket.projectId !== undefined || ticket.skills !== undefined || ticket.model !== undefined
+  const project = ticket.projectId === undefined ? undefined : listProjects(store).find(item => item.id === ticket.projectId)
   return { ...ticketLine(view, ticket), mandate: { ...ticket.mandate, actor: view.actor(ticket.mandate.actor, human) },
     basis: basisFacts(ticket.mandate.basis, view.rule), paused: store.settings().paused,
     channels: ticket.channels.map(channel => channelLink(view, channel)),
     decision: decision ? decisionView(view, decision) : undefined,
-    // Every started Assignment ran in the ticket's one worker Session. A running assignment whose worker reported a non-progress state has finished its turn unless a human response resumed the ticket.
-    assignments: ticket.assignments.map(assignment => ({ ...assignment, ...assignment.startedAt ? { ref: workerSessionId(ticket.id) } : {},
+    // An empty skill list allows every installed skill, which the panel states rather than showing nothing.
+    // A dispatch that continues an earlier one runs in that dispatch's worker Session and says which one it continues.
+    ...dispatched ? { dispatch: { project: project?.name ?? ticket.projectId ?? '', session: sessionOf(ticket),
+      ...ticket.continuedFrom ? { continuedFrom: ticket.continuedFrom } : {},
+      line: lineOf(ticket),
+      lineCount: store.tickets.list().filter(item => lineOf(item) === lineOf(ticket)).length,
+      skills: [...ticket.skills ?? []], skillsUnrestricted: !ticket.skills?.length, ...ticket.model ? { model: ticket.model } : {},
+      ...ticket.dispatcher ? { dispatcher: ticket.dispatcher } : {} } } : {},
+    // Every started Assignment ran in the ticket's worker Session, which a dispatch may share with the one it continues. A
+    // running assignment whose worker reported a non-progress state has finished its turn unless a human response resumed the ticket.
+    assignments: ticket.assignments.map(assignment => ({ ...assignment, ...assignment.startedAt ? { ref: sessionOf(ticket) } : {},
       ...assignment.state === 'running' && assignment.report && assignment.report.state !== 'progress' && stage !== 'working'
         ? { turnEndedAt: assignment.report.at } : {} })),
     inputs: ticket.inputs.slice().reverse().map(input),

@@ -33,9 +33,16 @@ export const KV = {
   /** Projects: the named workspaces dispatches belong to, in creation order; `id` and `key` are stable, `name` is renameable. */
   projects: { all: record<ProjectRecord[]>('projects') },
   /** Runtime: the main Session's ID. */
-  runtime: { masterId: record<string>('master-id') },
+  runtime: { masterId: record<string>('master-id'), /** Whether the plugin is enabled: false stops every pass, source poll and tool. */
+    enabled: record<boolean>('runtime-enabled') },
   /** Sessions: prompt revisions each Session has worked under, ordered oldest first; the last entry (`.at(-1)`) is its active revision. */
-  sessions: { prompts: family<number[], [session: string]>('session-prompts:') },
+  sessions: { prompts: family<number[], [session: string]>('session-prompts:'),
+    /**
+     * Sessions: the ticket a worker Session currently works for, by Session id. Written when a Session a dispatch continues
+     * takes a new ticket up, so a restart keeps which ticket a shared Session speaks for; absent for a Session that serves
+     * the ticket its id names.
+     */
+    ticket: family<string, [session: string]>('session-ticket:') },
   /** Schema 11 migration: legacy main-Session queues imported into the effect table. */
   queues: { relays: record<{ id: string; text: string }[]>('relay-queue'), unsubscribed: record<string[]>('subscription-results'),
     prompts: record<number | null>('prompt-notification'), settings: record<number | null>('settings-notification') },

@@ -105,6 +105,23 @@ function MandateDetails({ ticket, actor }: { ticket: TicketPageView; actor: stri
   </Section>
 }
 
+/** What the dispatch chose for this ticket: its project, the skills its worker may load, its model route and the Session that dispatched it. */
+function DispatchDetails({ dispatch }: { dispatch: NonNullable<TicketPageView['dispatch']> }) {
+  const { t } = usePanel()
+  const rows: [string, ReactNode][] = [
+    [t('dispatchProject'), dispatch.project || t('empty')],
+    [t('dispatchSkills'), dispatch.skillsUnrestricted ? t('dispatchSkillsAll') : dispatch.skills.join(t('listSeparator'))],
+  ]
+  if (dispatch.model) rows.push([t('dispatchModel'), `${dispatch.model.provider} · ${dispatch.model.model}`])
+  rows.push([t('dispatchLine'), t('dispatchLineCount', { count: dispatch.lineCount })])
+  if (dispatch.continuedFrom) rows.push([t('dispatchContinuedFrom'), dispatch.continuedFrom])
+  if (dispatch.dispatcher) rows.push([t('dispatchFrom'), <SessionButton variant="outline" sessionId={dispatch.dispatcher} />])
+  return <Section title={t('dispatchDetails')} icon="shield">
+    <KeyValues rows={rows} />
+    <Hint>{t('dispatchSkillsHint')}</Hint>
+  </Section>
+}
+
 export function TicketPage({ id }: { id: string }) {
   const { t, call } = usePanel()
   const { data, error, reload } = usePoll(() => call('GET tickets/:id', { id }), [id])
@@ -154,6 +171,7 @@ export function TicketPage({ id }: { id: string }) {
       <span className="dt-banner-label">{t('deliveryFailedPrefix')}</span>{data.deliveryError}
     </p>}
     <MandateDetails ticket={data} actor={actor} />
+    {data.dispatch && <DispatchDetails dispatch={data.dispatch} />}
     {undelivered.length > 0 && <Section title={t('undeliveredInputs')} count={undelivered.length}>
       <Hint>{data.deliveryError ? t('inputRetryHint') : data.paused ? t('inputPausedHint') : t('inputWaitingHint')}</Hint>
       <InputList inputs={undelivered} />

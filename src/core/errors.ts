@@ -1,5 +1,6 @@
 /** User-facing error codes mapped to their category ('missing' or 'refused') and English message template. */
 export const USER_ERRORS = {
+  pluginDisabled: ['refused', 'dsh-superagent is disabled; enable it on its page in the Plugin Manager'],
   unknownTicket: ['missing', 'Unknown ticket'],
   unknownProblem: ['missing', 'Unavailable Eval not found'],
   unknownTrigger: ['missing', 'Unknown trigger'],

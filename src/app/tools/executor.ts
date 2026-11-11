@@ -58,7 +58,8 @@ export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
         const at = args.thread.indexOf(':')
         if (at < 1 || at === args.thread.length - 1) throw new Error('A thread key is <source>:<id>, such as github:<number>')
         const followed = host.engine.followForContext(ticketId, { source: args.thread.slice(0, at), id: args.thread.slice(at + 1) })
-        if (followed) host.sessions.notify(...threadFollowedNotice(ticketId, args.thread, args.reason))
+        if (followed) host.sessions.notify(...threadFollowedNotice(ticketId, args.thread, args.reason),
+          host.store.tickets.get(ticketId)?.dispatcher)
         return { followed, thread: args.thread }
       }),
     }),
@@ -95,7 +96,8 @@ export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
             ...(args.reply_to_trigger_id ? { answers: args.reply_to_trigger_id } : {}) }
           const updated = host.engine.report(ticketId, report)
           const relay = reportRelay(updated, report)
-          if (relay) host.sessions.relay(relay.id, relay.text)
+          // A dispatched ticket reports to the conversation that dispatched it, which is where its person is.
+          if (relay) host.sessions.relay(relay.id, relay.text, updated.dispatcher)
           const notification = relay ? 'orchestrator' : 'internal_only'
           return { reported: true, notification, ...(updated.attention ? { attention: updated.attention } : {}) }
         })

@@ -5,7 +5,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { z } from 'zod'
 import { THREAD_FILTERS, TICKET_FILTERS, type Api, type ApiResponse, type RouteParams } from './api.ts'
 import { sourceSkills } from './context.ts'
-import { listProjects, renameProject } from './projects.ts'
+import { listProjects, projectView, renameProject, type ProjectRecord } from './projects.ts'
 import type { ModelCatalog } from '@deepseek-ai/dsh-api-session-controller/types'
 import { PromptConflict, SKILL_NAME, SKILL_PREFIX, TEAM_SECTIONS, builtInBase, builtInParts, defaultPrompts, savePrompts, type Prompts }
   from './prompts.ts'
@@ -49,8 +49,13 @@ export interface HttpHost {
   readonly setupProblem?: SetupProblem | undefined
   readonly feishuProblem?: SetupProblem | undefined
   configured(): boolean
+  /** Whether the plugin is enabled; its state page and the switch itself stay reachable either way. */
+  enabled(): boolean
+  setEnabled(enabled: boolean): boolean
   links(): LinkTarget
   ticketEnvironment(ticket: Ticket): Variable[]
+  /** Opens a project's Router Session when it has none yet; a rename reaches its Session's title the same way. */
+  ensureProjectRouter(project: ProjectRecord): Promise<unknown>
   checkSetup(): void
   requestPass(): void
   models(): Promise<ModelCatalog>
@@ -107,7 +112,7 @@ export function stateView(runtime: HttpHost) {
   const settings = runtime.store.settings()
   return { setup: setupView(runtime), load: { ...executorLoad(runtime.store, runtime.executor.activeCount()),
     maxWorkers: settings.executor.maxWorkers },
-    masterId: runtime.masterId, paused: settings.paused, health: runtime.health }
+    masterId: runtime.masterId, enabled: runtime.enabled(), paused: settings.paused, health: runtime.health }
 }
 const views = (runtime: HttpHost): ViewHost => ({ store: runtime.store, sources: runtime.sources, links: runtime.links() })
 const setupState = (runtime: HttpHost): SetupState => ({ deployment: runtime.configured() ? runtime.deployment : undefined,
@@ -159,12 +164,14 @@ function routes(runtime: HttpHost): Routes {
     'GET overview': () => overview(views(runtime), runtime.health, policyVersion(store.settings()),
       executorLoad(store, runtime.executor.activeCount()), runtime.setupProblem ?? runtime.feishuProblem),
     'GET search': ({ query }) => search(views(runtime), query.q ?? '', runtime.sourceLinks),
-    'GET projects': () => ({ items: listProjects(store) }),
+    'GET projects': () => ({ items: listProjects(store).map(projectView) }),
     'PATCH projects/:id': async ({ params, body }) => {
       const { name } = ProjectName.parse(await body())
       const renamed = renameProject(store, params.id, name)
       if (!renamed) throw new RouteError(404, 'Project not found')
-      return renamed
+      // The Router Session carries the project's name, so a rename reaches its title too.
+      await runtime.ensureProjectRouter(renamed)
+      return projectView(renamed)
     },
     'GET sources': () => sourcesStatus(views(runtime), runtime.health, setupState(runtime)),
     'GET settings': () => settingsView(store, runtime.sources, runtime.health, setupState(runtime), runtime.machine.stateDir),
@@ -202,6 +209,8 @@ function routes(runtime: HttpHost): Routes {
     'POST tickets/:id/retry': ({ params }) => { const id = ticket(params.id); runtime.engine.retryTicket(id); return { retried: true } },
     'POST tickets/:id/stop': ({ params }) => { const id = ticket(params.id); runtime.engine.stopTicket(id); return { stopped: true } },
     'POST executor/pause': async ({ body }) => runtime.settings.pause(z.object({ paused: z.boolean() }).parse(await body()).paused, 'panel'),
+    // The switch lives on the plugin page, which stays mounted while the panel and the sidebar entry are hidden.
+    'POST plugin/enabled': async ({ body }) => ({ enabled: runtime.setEnabled(z.object({ enabled: z.boolean() }).parse(await body()).enabled) }),
     'PUT settings/:block': async ({ params, body }) => {
       const block = SettingsBlockSchema.parse(params.block)
       const known = !block.startsWith('source:') || runtime.sources.instances().some(instance => `source:${instance.id}` === block)

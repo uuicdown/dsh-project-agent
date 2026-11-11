@@ -150,3 +150,29 @@ it('ends a restart that never stopped answering after half a minute, and reads t
   await advance(2_000)
   expect(reads()).toBe(ended + 1)
 })
+
+it('turns the plugin off and on from the Plugin Manager page, which stays while the panel and the sidebar seat hide', async () => {
+  let container = document.createElement('div')
+  let root = createRoot(container)
+  onTestFinished(() => { act(() => { root.unmount() }); container.remove() })
+  const render = async () => {
+    act(() => { root.unmount() }); container.remove()
+    container = document.createElement('div'); document.body.append(container)
+    root = createRoot(container)
+    const form = server.form
+    await act(async () => { root.render(<PluginConfig t={translator(zh)} view="page" form={form && { state: form.getSnapshot(),
+      mutate: form.mutate }} />) })
+    await settle()
+  }
+  await render()
+  expect(text()).toContain(zh.pluginEnabled)
+  await click(zh.disablePlugin)
+  expect(server.enabled).toBe(false)
+  expect(server.requests.some(request => request.path === 'plugin/enabled' && request.method === 'POST')).toBe(true)
+  // The page says so, and offers the way back.
+  expect(text()).toContain(zh.pluginDisabled)
+  expect(text()).toContain(zh.pluginOffHint)
+  await click(zh.enablePlugin)
+  expect(server.enabled).toBe(true)
+  expect(text()).toContain(zh.pluginEnabled)
+})

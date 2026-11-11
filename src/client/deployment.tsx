@@ -2,12 +2,12 @@
  * Deployment settings view shared between the panel Settings tab and the DSH Plugin Manager config page.
  * Edits host-level plugin configuration limits through DSH `ConfigForm` when writable.
  */
-import { useCallback, useMemo, useSyncExternalStore } from 'react'
+import { useCallback, useMemo, useState, useSyncExternalStore } from 'react'
 import type { ConfigForm } from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { ConfigPageForm } from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
 import { LIMITS } from '../limits.ts'
 import type { SetupView } from './api.ts'
-import { InfoTip, Input } from './controls.tsx'
+import { Button, InfoTip, Input } from './controls.tsx'
 import { SaveBar, useDraft } from './draft.tsx'
 import { PanelProvider, usePanel, usePanelData } from './provider.tsx'
 import { Field, Fields } from './settings-kit.tsx'
@@ -85,9 +85,24 @@ export function DeploymentPage({ setup, form, accounts: showAccounts }: { setup:
 
 /** Plugin Manager config page; includes derived repository and accounts because Source settings live in the main panel. */
 function PluginPage({ form }: { form: DeploymentForm }) {
-  const { t } = usePanel()
-  const { state, error } = usePanelData()
+  const { t, call } = usePanel()
+  const { state, error, reload } = usePanelData()
+  const [busy, setBusy] = useState(false)
+  // The switch stays here while everything else the plugin adds is hidden, so a disabled plugin can always be turned back on.
+  const enabled = state?.enabled !== false
+  const toggle = async (): Promise<void> => {
+    setBusy(true)
+    try { await call('POST plugin/enabled', { body: { enabled: !enabled } }); await reload() } finally { setBusy(false) }
+  }
   return <div className="dt-embedded">
+    <Section title={t('pluginSwitchTitle')}>
+      <p className="dt-hint">{t(enabled ? 'pluginOnHint' : 'pluginOffHint')}</p>
+      <p className="dt-row-meta">
+        <span className="dt-badge">{t(enabled ? 'pluginEnabled' : 'pluginDisabled')}</span>
+        <Button variant={enabled ? 'outline' : 'primary'} disabled={busy} onClick={() => { void toggle() }}>
+          {t(enabled ? 'disablePlugin' : 'enablePlugin')}</Button>
+      </p>
+    </Section>
     {state ? <DeploymentPage setup={state.setup} form={form} accounts />
       : error ? <p className="dt-error" role="alert">{error.message}</p> : <p className="dt-hint">{t('loading')}</p>}
   </div>

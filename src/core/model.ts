@@ -283,6 +283,27 @@ export interface Ticket {
   skills?: readonly string[]
   /** Project this ticket belongs to (see `ProjectRecord`); absent for a Source-accepted ticket or a dispatch without one. */
   projectId?: string
+  /**
+   * The main Session that dispatched this ticket, whose conversation hears its reports and notices first; absent for a
+   * Source-accepted ticket, whose reports go to the main Session that owns the Source.
+   */
+  dispatcher?: string
+  /**
+   * The Executor Session this ticket's worker runs in when the dispatch continues an earlier one, such as `worker-<earlier
+   * ticket id>`; absent when the ticket has a Session of its own, named `worker-<this id>`. A reused Session runs the work
+   * of one ticket at a time and speaks for the ticket it currently works for.
+   */
+  session?: string
+  /**
+   * The dispatch that started this ticket's task line: the chain of dispatches a person means by "carry on with that". Absent
+   * when this ticket starts a line. A worker Session serves one task line, so a continuation may not cross lines.
+   */
+  lineId?: string
+  /**
+   * The earlier dispatch whose Executor Session this ticket continues, when the router judged the request to follow on from
+   * that work. It records the continuity; the earlier ticket keeps its own state, and its reports are unchanged.
+   */
+  continuedFrom?: string
   /** Model route this ticket's worker runs under; undefined uses the configured worker role model. */
   model?: TicketModel
   decisionId: string

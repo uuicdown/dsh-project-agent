@@ -20,7 +20,9 @@ import { Commands } from '../infra/commands.ts'
 import type { Deployment, Machine } from '../deployment.ts'
 import { environmentOf, ticketEnvironment, type Variable } from './execution-environment.ts'
 import type { SetupProblem } from '../setup.ts'
-import { DshExecutor, sourceTrigger, triggerMessage, workerSessionId } from '../executor/dsh.ts'
+import { DshExecutor, sessionOf, sourceTrigger, triggerMessage } from '../executor/dsh.ts'
+import { ensureProject, isRouterSession, listProjects, routerSessionId, routerTitle, type ProjectRecord } from './projects.ts'
+import { sameDirectory } from '../infra/environment.ts'
 import { ticketCard } from './cards.ts'
 import { MasterAssessor } from './assessment.ts'
 import { KV } from '../kv.ts'
@@ -50,6 +52,17 @@ import { executorTools, type ExecutorToolsHost } from './tools/executor.ts'
 // Source plugins interact with dsh-superagent exclusively through the `SourceHost` service interface.
 declare module '@deepseek-ai/cordis' { interface Context { orchestrator: SourceHost } }
 const now = (): string => new Date().toISOString()
+/**
+ * The Session that dispatched the first ticket a follow-up reached: a person's message belongs in the Router Session of the
+ * project whose work it is about, not in the background master's conversation.
+ */
+function followupDispatcher(store: Store, triggerId: string): string | undefined {
+  for (const id of store.triggers.disposition(triggerId)?.fanout ?? []) {
+    const dispatcher = store.tickets.get(id)?.dispatcher
+    if (dispatcher !== undefined) return dispatcher
+  }
+  return undefined
+}
 
 /**
  * Composition root of dsh-superagent that connects `Store`, `Setup`, `Engine`, `SourceRegistry`, `Effects`, `Outbox`, `Passes`, `Sessions`, `Settings`, `Prompts`, `DshExecutor`, and `MasterAssessor`.
@@ -74,6 +87,10 @@ export class Runtime extends Service implements SourceHost {
   private readonly board = new HealthBoard()
   private readonly runtimeHealth = this.board.claim('runtime', { state: 'starting', detail: '' })
   readonly masterId: string
+  /** Each project's Router Session, by project id: created the first time the project is seen, and awaited after that. */
+  private readonly routers = new Map<string, Promise<SessionId>>()
+  /** The title each Router Session was last given, so renaming a project renames its Session too. */
+  private readonly routerTitles = new Map<string, string>()
   private readonly sourceLinks = new TextCache(200_000)
   private readonly stopped = new AbortController()
   private readonly disposers: (() => void)[] = []
@@ -84,6 +101,8 @@ export class Runtime extends Service implements SourceHost {
   private readonly toolHost: MainToolsHost & ExecutorToolsHost
   /** Non-zero while a main-Session tool is executing an Engine command, suppressing self-triggered domain event notices. */
   private quiet = 0
+  /** Receives the new value whenever the plugin is enabled or disabled, so long-lived Source loops follow it. */
+  private readonly enabledListeners = new Set<(enabled: boolean) => void>()
   constructor(ctx: Context, readonly machine: Machine, restart: () => void) {
     super(ctx, 'orchestrator')
     const runtime = this
@@ -119,8 +138,8 @@ export class Runtime extends Service implements SourceHost {
         promptVersion: id => this.sessions.promptVersion(id), mayRead: (id, revision) => this.sessions.mayRead(id, revision),
         feishuPageSize: () => feishuSettings(sources).readPageSize, sourceLink: link }
       const sessions = this.sessions = new Sessions({ context: ctx, store, prompts, effects, health: board.claim('models'), masterId,
-        standalone: machine.standalone,
         lifetime: this.lifetime,
+        enabled: () => this.enabled,
         closing: () => this.closing(), environment,
         tools: (agent, ticket) => ticket ? executorTools(this.toolHost, ticket) : mainTools(this.toolHost, agent) })
       const policyChanged: EngineForSettings['policyChanged'] = (from, to, effects) => { this.engine.policyChanged(from, to, effects) }
@@ -139,14 +158,18 @@ export class Runtime extends Service implements SourceHost {
         outbox, prepareTicket: (ticket, outcome) => executor.prepare(ticket, outcome), emit: event => {
           // Notify the main Session only about domain events it did not initiate itself.
           const notice = this.quiet ? undefined : eventNotice(event, id => store.tickets.get(id))
-          if (notice) sessions.notify(...notice)
+          // A ticket a person dispatched reports in the conversation that dispatched it, where that person is.
+          const ended = event.type === 'ticket.ended' ? store.tickets.get(event.data.ticketId) : undefined
+          if (notice) sessions.notify(...notice, ended?.dispatcher)
           // A person's message that reached an open ticket is the ticket's; the main Session hears of it in the same transaction,
           // and of one for an ended ticket once it resumes, unless it routed the message there itself.
-          const followed = !this.quiet && (event.type === 'trigger.received' || event.type === 'ticket.resumed' || event.type === 'trigger.followup')
-          const followup = followed ? followupNotice(store, sources, event.data.triggerId) : undefined
-          if (followup) sessions.relay(followup.id, followup.text)
+          const followupId = !this.quiet && (event.type === 'trigger.received' || event.type === 'ticket.resumed' || event.type === 'trigger.followup')
+            ? event.data.triggerId : undefined
+          if (followupId !== undefined) {
+            const followup = followupNotice(store, sources, followupId)
+            if (followup) sessions.relay(followup.id, followup.text, followupDispatcher(store, followupId))
+          }
           // Notify the ticket's conversations whenever it ends via a pull request.
-          const ended = event.type === 'ticket.ended' ? store.tickets.get(event.data.ticketId) : undefined
           if (ended && setup.configured()) {
             const request = store.triggers.get(ended.origin.triggerId)?.text ?? ''
             for (const message of pullEndNotices(ended, request, setup.deployment.repository)) outbox.send(message)
@@ -156,12 +179,15 @@ export class Runtime extends Service implements SourceHost {
       const evals = board.claim('evals', { state: 'ready', detail: 'No unavailable Eval in the last hour' })
       const evaluateDue = () => { engine.evaluateDue(); evals.set(evalsHealth(store)) }
       const passes = this.passes = new Passes({ engine: { receive: trigger => engine.receive(trigger), evaluateDue }, effects,
-        health: this.runtimeHealth, lifetime: this.lifetime, configured: () => setup.configured(), closing: () => this.closing() })
+        health: this.runtimeHealth, lifetime: this.lifetime, enabled: () => this.enabled, configured: () => setup.configured(),
+        closing: () => this.closing() })
       this.sourceDeps = { store, engine, outbox, commands, sources, get ready() { return runtime.ready },
         get deployment() { return setup.deployment }, configured: () => setup.configured(),
-        get setupProblem() { return setup.problem }, get feishuProblem() { return setup.feishuProblem }, receive: trigger => passes.receive(trigger) }
+        get setupProblem() { return setup.problem }, get feishuProblem() { return setup.feishuProblem }, receive: trigger => passes.receive(trigger),
+        enabled: () => this.enabled }
       this.toolHost = { context: ctx, engine, store, prompts, sessions, settings: this.settings, assessor, resources,
         get github() { return runtime.context({ kind: 'github', health: ['github'] }) },
+        projectRouter: project => this.ensureProjectRouter(project),
         requestPass: () => { passes.request() }, sendReplies: () => outbox.sent(),
         quietly: run => { this.quiet++; try { return run() } finally { this.quiet-- } } }
       this.ready = this.initialize()
@@ -172,6 +198,23 @@ export class Runtime extends Service implements SourceHost {
     }
   }
   get health(): Readonly<Record<string, Health>> { return this.board.all }
+  /** Whether the plugin is enabled; a disabled plugin runs no pass, polls no Source and refuses every tool. */
+  get enabled(): boolean { return this.store.get(KV.runtime.enabled) ?? true }
+  /**
+   * Enables or disables the plugin: the flag is stored first, so a restart keeps it, then Sources hear about it and a pass runs
+   * when it was enabled again. The panel and sidebar entry hide themselves from the same flag.
+   */
+  setEnabled(enabled: boolean): boolean {
+    if (enabled !== this.enabled) this.store.set(KV.runtime.enabled, enabled)
+    for (const listener of this.enabledListeners) { try { listener(enabled) } catch (error: unknown) { this.ctx.logger.warn('dsh-superagent: %s', String(error)) } }
+    if (enabled) this.passes.request()
+    return enabled
+  }
+  /** Calls `listener` whenever the plugin is enabled or disabled; returns the unsubscribe. */
+  onEnabledChange(listener: (enabled: boolean) => void): () => void {
+    this.enabledListeners.add(listener)
+    return () => { this.enabledListeners.delete(listener) }
+  }
   /** Aborted when dsh-superagent stops or loses its state directory lock, cancelling running reads and subprocesses. */
   get lifetime(): AbortSignal { return this.stopped.signal }
   context(kind: { kind: string; health: readonly string[] }): SourceContext { return sourceContextOf(this.sourceDeps, kind) }
@@ -192,6 +235,53 @@ export class Runtime extends Service implements SourceHost {
     return ticketEnvironment({ deployment, sources, settings: this.store.settings(), ticket, ...trigger ? { trigger } : {} })
   }
   checkSetup(): void { this.setup.check() }
+  /**
+   * The project's own Router Session, opened in the project's directory: a person's Session is never turned into one. It is
+   * created the first time the project is seen, and retitled when the project is renamed, so its conversation is found under
+   * the project's name. Undefined in a deployment without Router Sessions, for a project with no directory, or on failure.
+   */
+  async ensureProjectRouter(project: ProjectRecord): Promise<SessionId | undefined> {
+    if (!this.machine.standalone || project.path === '') return undefined
+    const title = routerTitle(project)
+    let pending = this.routers.get(project.id)
+    if (pending === undefined) {
+      pending = this.sessions.ensure(routerSessionId(project.id), project.path, title, 'orchestrator')
+        .then(agent => { this.routerTitles.set(project.id, title); return agent.id as SessionId })
+      this.routers.set(project.id, pending)
+    }
+    try {
+      const sessionId = await pending
+      if (this.routerTitles.get(project.id) !== title && !this.closing()) {
+        await this.ctx.sessionController.rename({ sessionId, title })
+        this.routerTitles.set(project.id, title)
+      }
+      return sessionId
+    } catch (error) {
+      // Forget the failed open, so the next time the project is seen tries again instead of caching the failure.
+      this.routers.delete(project.id)
+      this.ctx.logger.warn('dsh-superagent could not open the Router Session of project %s: %s', project.id, String(error))
+      return undefined
+    }
+  }
+  /**
+   * Gives the project a person opened a Session in its own Router Session. That Session is left as it is, in the preset and
+   * with the tools it was opened with: the project's conversation is the Router Session beside it.
+   */
+  private async adopt(agent: Agent): Promise<void> {
+    const id = agent.id
+    if (!this.machine.standalone || id === this.masterId || isRouterSession(id)) return
+    if (this.sessions.ownerOf(id) !== undefined || agent.session.header.parentSession !== undefined) return
+    const directory = this.sessionDirectory(agent)
+    if (directory === undefined || directory === '' || sameDirectory(directory, this.machine.stateDir)) return
+    await this.ensureProjectRouter(ensureProject(this.store, directory))
+  }
+  /** The directory a Session works in: the one it was opened with, or the path of its workspace. */
+  private sessionDirectory(agent: Agent): string | undefined {
+    const header = agent.session.header as { cwd?: string; workspaceId?: string }
+    const registry = this.ctx.get('workspaceRegistry') as { get(id: string): { path: string } | undefined } | undefined
+    const workspace = header.workspaceId === undefined ? undefined : registry?.get(header.workspaceId)
+    return header.cwd ?? workspace?.path
+  }
   receive(trigger: Trigger): ReceiveResult { return this.passes.receive(trigger) }
   idle(): Promise<void> { return this.passes.idle() }
   pump(): Promise<void> { return this.passes.pump() }
@@ -208,7 +298,15 @@ export class Runtime extends Service implements SourceHost {
     }
     this.sessions.install()
     this.executor.install()
+    // A person's Session in a project gets that project its own Router Session; the plugin never routes their Session itself.
+    // Scheduled off the event, so opening the Router Session does not nest inside the event that announced their Session.
+    this.ctx.on('agent/created', ({ agent }) => {
+      queueMicrotask(() => { void this.adopt(agent).catch(error => this.ctx.logger.warn('dsh-superagent could not open a project Router Session: %s', String(error))) })
+    })
     await this.sessions.ensure(this.masterId, this.machine.stateDir, 'dsh-superagent orchestrator', 'orchestrator')
+    // Open each existing project's Router Session as well, so the sidebar offers its conversation; none delays startup, and
+    // `ensureProjectRouter` records a failure on its own instead of rejecting here.
+    for (const project of listProjects(this.store)) void this.ensureProjectRouter(project)
     for (const id of this.settings.syncable()) await this.settings.sync(id).catch(() => { /* sync() records its failure in health. */ })
     // If stop() was called while awaiting setup, session creation, or policy sync, do not start background loops.
     if (this.closing()) return
@@ -223,7 +321,9 @@ export class Runtime extends Service implements SourceHost {
     return { store, sources, prompts, sessions, settings, engine, executor, health, machine, masterId, ready, sourceLinks,
       get deployment() { return setup.deployment },
       get setupProblem() { return setup.problem }, get feishuProblem() { return setup.feishuProblem },
-      configured: () => setup.configured(), links: () => runtime.links(), ticketEnvironment: ticket => runtime.ticketEnvironment(ticket),
+      configured: () => setup.configured(), enabled: () => runtime.enabled, setEnabled: enabled => runtime.setEnabled(enabled),
+      links: () => runtime.links(), ticketEnvironment: ticket => runtime.ticketEnvironment(ticket),
+      ensureProjectRouter: project => runtime.ensureProjectRouter(project),
       checkSetup: () => { setup.check() }, requestPass: () => { passes.request() }, models: () => this.ctx.sessionController.modelCatalog() }
   }
   /** Idempotent stop; concurrent or repeated calls share the same shutdown promise. */
@@ -232,7 +332,8 @@ export class Runtime extends Service implements SourceHost {
     this.closingFlag = true; const passes = this.passes.stop(); this.stopped.abort()
     try {
       this.assessor.stop()
-      const ids = [this.masterId, ...this.store.tickets.list().map(ticket => workerSessionId(ticket.id))]
+      const ids = [...new Set([this.masterId, ...listProjects(this.store).map(project => routerSessionId(project.id)),
+        ...this.store.tickets.list().map(ticket => sessionOf(ticket))])]
       const agents = ids.map(id => this.ctx.agents.get(id as SessionId)).filter((agent): agent is Agent => agent !== undefined)
       for (const agent of agents) agent.cancel({ kind: 'user' }, { keepInbox: true })
       await Promise.allSettled([passes, this.effects.drain(), ...agents.map(agent => agent.whenIdle())])

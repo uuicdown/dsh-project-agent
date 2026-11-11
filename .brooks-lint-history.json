@@ -1,0 +1,13 @@
+[
+  {
+    "date": "2026-11-11",
+    "mode": "PR Review",
+    "score": 87,
+    "findings": {
+      "critical": 0,
+      "warning": 2,
+      "suggestion": 3
+    },
+    "scope": "PR #1 feat/plugin-switch (8 commits, 50 files)"
+  }
+]

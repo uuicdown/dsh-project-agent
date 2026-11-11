@@ -1,6 +1,7 @@
 /** Main Session tools for routing triggers, assessing candidates, sending replies, and updating settings and prompts. */
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { SessionId } from '@deepseek-ai/dsh-session'
 import { z } from 'zod'
 import { UserError, followupOwners, key, reasonText, type Decision, type DecisionKind, type EngineForMainSession, type EngineForPeople }
   from '../../core/index.ts'
@@ -8,7 +9,8 @@ import { IM_WORDS, NOTE_WORDS, wordCount } from '../../infra/text.ts'
 import { AssessmentSchema, EvalReadSchema, WorktreeNameSchema, type MasterAssessor } from '../assessment.ts'
 import { ticketCard } from '../cards.ts'
 import { PromptConfigSchema, savePrompts, type Prompts } from '../prompts.ts'
-import { ensureProject } from '../projects.ts'
+import { ensureProject, dispatchBriefing, lineOf, projectByPath, taskLineRefusal, type ProjectRecord } from '../projects.ts'
+import { sessionOf } from '../../executor/dsh.ts'
 import { readResource, type MainResourceHost, type ResourceHost } from '../resources.ts'
 import type { Sessions } from '../sessions.ts'
 import type { Settings } from '../settings.ts'
@@ -24,10 +26,12 @@ export interface MainToolsHost {
   readonly engine: Pick<EngineForMainSession, 'decide' | 'dispatch' | 'attach' | 'reply' | 'requestStatus' | 'note'> & EngineForPeople
   readonly store: Pick<Store, 'tickets' | 'triggers' | 'threads' | 'atomic' | 'replyStatus' | 'settings' | 'get' | 'set'>
   readonly prompts: Pick<Prompts, 'preview' | 'save'>
-  readonly sessions: Pick<Sessions, 'status' | 'notify' | 'delivery' | 'modelRetry'>
+  readonly sessions: Pick<Sessions, 'status' | 'notify' | 'delivery' | 'modelRetry' | 'ownerOf'>
   readonly settings: Pick<Settings, 'view' | 'block' | 'save' | 'pause' | 'sync'>
   readonly assessor: Pick<MasterAssessor, 'context' | 'read' | 'decide'>
   readonly resources: ResourceHost
+  /** Opens `project`'s Router Session if it has none yet, so every dispatched project has a conversation of its own. */
+  projectRouter(project: ProjectRecord): Promise<unknown>
   /** Schedules a pass to carry out work queued by an Engine command (such as an Eval or ticket resume). */
   requestPass(): void
   sendReplies(): Promise<void>
@@ -310,12 +314,19 @@ export function mainTools(host: MainToolsHost, agent: Agent): Tool[] {
     }),
     tool({
       name: 'project_dispatch',
-      description: 'Dispatch a project request as a new ticket. The main Session never performs the work itself: the ticket runs in its own persistent worker Session, which receives the listed skills. Use this for every request from a person in a project.',
+      description: 'Dispatch a project request as a new ticket. The main Session never performs the work itself: the ticket runs in its own persistent '
+        + 'worker Session, unless the request follows on from an earlier dispatch of the same project, whose Session then continues it. Use this for '
+        + 'every request from a person in a project. Its worker reports back to this conversation, which is where you answer in one short paragraph. '
+        + 'It answers the ticket card and what the dispatch chose: the worker Session, the skills, the model route, the Session that dispatched it, and '
+        + 'the earlier dispatch its Session continues or how many earlier dispatches briefed the worker.',
       schema: z.object({
         project: z.string().min(1).describe('The project this work belongs to; items of one project share a thread.'),
         title: z.string().min(1).max(200).describe('A short label of the work.'),
-        task: z.string().min(1).describe('The complete request for the worker, in the user\'s own terms.'),
-        skills: z.array(z.string()).default([]).describe('Skill names the worker may use for this ticket.'),
+        task: z.string().min(1).describe('The complete request for the worker, in the user\'s own terms. A new Session also receives a briefing of the project\'s earlier dispatches.'),
+        continue_ticket: z.string().nullish().describe('An earlier dispatch of this project whose worker Session continues this work when the task follows '
+          + 'on from it, by its ticket_id; omit for work that starts a new Session. Never name a dispatch of another project, and never continue a Session '
+          + 'without judging that the request is about that work.'),
+        skills: z.array(z.string()).default([]).describe('Skill names the worker may use for this ticket; an empty list allows every installed skill.'),
         provider: z.string().optional().describe('Model provider route for the worker; omit to use the configured executor role model.'),
         model: z.string().optional().describe('Model id for the worker; give it together with provider.'),
         reasoningEffort: z.string().optional().describe('Reasoning effort id for the worker model.'),
@@ -330,19 +341,47 @@ export function mainTools(host: MainToolsHost, agent: Agent): Tool[] {
         const registry = host.context.get('workspaceRegistry') as { get(id: string): { path: string } | undefined } | undefined
         const workspace = header.workspaceId === undefined ? undefined : registry?.get(header.workspaceId)
         const cwd = header.cwd ?? workspace?.path
-        const text = cwd === undefined ? args.task
-          : `Project directory: ${cwd}
-Work inside that directory; never ask the person for its path.
-
-${args.task}`
         // The named project is created on its first dispatch, so the sidebar can group and rename what the work belongs to.
-        const project = ensureProject(host.store, cwd, args.project)
+        // A Session that already belongs to a project dispatches into that project, whatever name it gives it.
+        const project = projectByPath(host.store, cwd ?? '') ?? ensureProject(host.store, cwd, args.project)
+        // Every project has a Router Session of its own: the conversation its workers report in, and where a person continues.
+        await host.projectRouter(project)
+        // An earlier dispatch is a ticket of this project, never one of another: a worker Session is never shared across projects.
+        const continued = args.continue_ticket ? host.store.tickets.get(args.continue_ticket) : undefined
+        if (args.continue_ticket && !continued) throw new UserError('unknownTicket')
+        if (continued && continued.projectId !== project.id) {
+          throw new Error('continue_ticket must be an earlier dispatch of this project: a worker Session is never shared across projects, so this request starts its own Session here')
+        }
+        if (continued) {
+          const status = host.context.agents.get(sessionOf(continued) as SessionId)?.status
+          if (status === 'running') {
+            throw new Error('That dispatch\'s worker Session is running: continue it once its worker hands off, or dispatch this work in a new Session')
+          }
+          // A worker Session carries one task line: continuing a dispatch whose Session now serves another line would mix both.
+          const owner = host.sessions.ownerOf(sessionOf(continued))
+          const refusal = taskLineRefusal(continued, owner === undefined ? undefined : host.store.tickets.get(owner))
+          if (refusal) throw new Error(refusal)
+        }
+        // A dispatch that continues an earlier one starts in that Session's conversation; every other starts with the project's briefing.
+        const earlier = host.store.tickets.list().filter(ticket => ticket.projectId === project.id)
+          .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+        const text = [cwd === undefined ? undefined : `Project directory: ${cwd}\nWork inside that directory; never ask the person for its path.`,
+          continued
+            ? `Continue ${continued.title} (ticket ${continued.id}) in the worker Session that began it: its earlier work is the conversation above.`
+            : dispatchBriefing(project.name, earlier),
+          args.task].filter(Boolean).join('\n\n')
         try {
           const ticket = host.quietly(() => host.engine.dispatch({
-            project: args.project, projectId: project.id, title: args.title, text, name: 'task', directory: cwd, skills: args.skills, model,
+            project: project.name, projectId: project.id, title: args.title, text, name: 'task', directory: cwd, skills: args.skills, model,
+            dispatcher: agent.id,
+            ...continued ? { session: sessionOf(continued), continuedFrom: continued.id, lineId: lineOf(continued) } : {},
           }))
           host.requestPass()
-          return { decision: 'accept', reason: 'Dispatched', ticket: ticketCard(ticket) }
+          // Answer what the dispatch chose, so the person can see the skills, the model route and the Session it started or continued.
+          return { decision: 'accept', reason: 'Dispatched', ticket: ticketCard(ticket), dispatch: {
+            project: project.name, project_id: project.id, session: sessionOf(ticket), skills: [...ticket.skills ?? []],
+            skills_unrestricted: !ticket.skills?.length, model: model ?? null, briefing: continued ? 0 : earlier.length,
+            line: lineOf(ticket), ...continued ? { continued_from: continued.id } : {}, dispatcher: agent.id } }
         } catch (error) {
           throw error
         }

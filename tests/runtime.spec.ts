@@ -49,9 +49,11 @@ let guards: Map<string, Guard>
 let restricts: Map<string, unknown[]>
 type HttpHandler = (req: unknown, res: unknown) => Promise<void>
 let http: HttpHandler
-async function api(method: string, path: string): Promise<{ status: number; body: unknown }> {
+async function api(method: string, path: string, body?: string): Promise<{ status: number; body: unknown }> {
   let status = 0, text = ''
-  const req = { method, url: `/orchestrator/api/${path}`, headers: { host: '127.0.0.1:3082', 'x-orchestrator-request': '1' } }
+  const chunks = body === undefined ? [] : [Buffer.from(body)]
+  const req = { method, url: `/orchestrator/api/${path}`, headers: { host: '127.0.0.1:3082', 'x-orchestrator-request': '1' },
+    async *[Symbol.asyncIterator]() { yield* chunks } }
   await http(req, { writeHead: (code: number) => { status = code }, end: (data: string) => { text = data } })
   return { status, body: JSON.parse(text) }
 }
@@ -1495,30 +1497,21 @@ it('fails a ticket at once on a worker error that is not passing, and relays it'
 it('refuses the main Session a bash command that runs sleep and a long job wait, as reports arrive by themselves, and no worker', async () => {
   const bash = (command: string) => ({ name: 'bash', arguments: { command, description: 'x' } })
   const main = guards.get(runtime.masterId)!
-  for (const command of ['sleep 60; echo done', 'cd x && sleep 5', 'gh pr checks 7 || sleep 30', 'echo a\nsleep 90', 'while true; do sleep 30; done',
-    '(sleep 5)', '/bin/sleep 240', 'while sleep 30; do gh pr checks 7; done', 'if sleep 5; then gh pr view 7; fi', '{ sleep 60; }', '! sleep 5',
-    'nohup sleep 60', 'exec sleep 60', 'time sleep 60', 'until sleep 1; do :; done', 'command sleep 5', 'env sleep 5'])
-    expect(main(bash(command)), command).toMatch(/^Reports, follow_up notices, new candidates and a background job's end/)
-  // A command that names sleep as data, not at a command position, runs.
-  for (const command of ['gh api repos/acme/widgets/pulls', 'echo "sleep"', 'grep sleep file', 'sleeper --help', 'command -v sleep'])
-    expect(main(bash(command)), command).toBeUndefined()
-  // A command that asks to hold the step longer than 30 seconds, however it waits, under any preset.
   const timed = (command: string, args: { timeoutMs?: number; run_in_background?: boolean } = {}) =>
     ({ name: 'bash', arguments: { command, description: 'x', ...args } })
-  expect(main(timed('gh api repos/acme/widgets/pulls', { timeoutMs: 120_000 }))).toMatch(/^Reports/)
-  expect(main(timed("python3 -c 'import time;time.sleep(240)'", { timeoutMs: 600_000 }))).toMatch(/^Reports/)
-  expect(main(timed('gh api repos/acme/widgets/pulls', { timeoutMs: 20_000 }))).toBeUndefined()
-  // Under the router preset, the shell moves a command without a timeout to a background job after 5 seconds, and a job
-  // wait without one ends after 5 seconds too; a longer job wait waits for nothing that arrives that way.
-  expect(main(timed('gh pr checks 7 --watch'))).toBeUndefined()
-  expect(main({ name: 'job_output', arguments: { job_id: 'j', wait: true } })).toBeUndefined()
-  expect(main({ name: 'job_output', arguments: { job_id: 'j', wait: true, timeout_ms: 30_000 } })).toMatch(/^Reports/)
-  expect(main({ name: 'job_output', arguments: { job_id: 'j', wait: true, timeout_ms: 5_000 } })).toBeUndefined()
-  expect(main({ name: 'job_output', arguments: { job_id: 'j' } })).toBeUndefined()
+  // A Router runs no shell and no job at all: a profile mounts those tools on every Session whatever preset it runs, so the host
+  // refuses them rather than warning about waits that could hold the step.
+  for (const command of ['sleep 60; echo done', 'gh pr checks 7', 'echo "sleep"', 'cd x && sleep 5'])
+    expect(main(bash(command)), command).toMatch(/Router Session/)
+  expect(main(timed('gh pr checks 7 --watch'))).toMatch(/Router Session/)
+  expect(main(timed('gh api repos/acme/widgets/pulls', { timeoutMs: 20_000 }))).toMatch(/Router Session/)
+  expect(main({ name: 'job_output', arguments: { job_id: 'j', wait: true } })).toMatch(/Router Session/)
   // A main Session created before runs under standard, whose shell waits 60 seconds by default and whose job waits last 30:
   // a command without a timeout runs in the background or names one, and a job wait names one.
   ;(agents.get(runtime.masterId) as unknown as { session: { header: { agentPreset: string } } }).session.header = { agentPreset: 'standard' }
   expect(main(timed('gh pr checks 7 --watch'))).toMatch(/^This shell waits up to 60 seconds by default: pass timeoutMs of at most 30000/)
+  // The wait rules still apply to a main Session that is not the router, such as one created before the preset existed.
+  expect(main(bash('sleep 60; echo done'))).toMatch(/^Reports, follow_up notices, new candidates and a background job's end/)
   expect(main(timed('gh pr checks 7 --watch', { run_in_background: true }))).toBeUndefined()
   expect(main(timed('gh api repos/acme/widgets/pulls', { timeoutMs: 20_000 }))).toBeUndefined()
   expect(main({ name: 'job_output', arguments: { job_id: 'j', wait: true } })).toMatch(/^Reports/)
@@ -1546,7 +1539,9 @@ it('reads the main Session\'s preset from a registry with or without presetForSe
   expect(main(watch)).toMatch(/^This shell waits up to 60 seconds by default/)
   // Without the projection either, the preset it was created with counts: the router preset.
   main = await guard({ select: vi.fn() })
-  expect([main(route), main(watch)]).toEqual([undefined, undefined])
+  expect(main(route)).toBeUndefined()
+  // A Router may not run a shell at all, so the caps message gives way to the refusal.
+  expect(main(watch)).toMatch(/Router Session/)
   // The registry says standard though the Session was created with the router preset: standard's caps apply.
   main = await guard({ select: vi.fn(), presetForSession: () => 'standard' })
   expect(main(watch)).toMatch(/^This shell waits up to 60 seconds by default/)
@@ -1555,6 +1550,39 @@ it('reads the main Session\'s preset from a registry with or without presetForSe
   expect(main(route)).toBeUndefined()
   expect(main(watch)).toMatch(/^This shell waits up to 60 seconds by default/)
 })
+
+it('stops every tool, pass and Source while the plugin is disabled, and comes back without a restart', async () => {
+  expect((await api('GET', 'state')).body).toMatchObject({ enabled: true })
+  expect(await api('POST', 'plugin/enabled', '{"enabled":false}')).toMatchObject({ status: 200, body: { enabled: false } })
+  expect((await api('GET', 'state')).body).toMatchObject({ enabled: false })
+  // Sessions decorated before the switch was turned off still hold their tools, so the gate sits at the call itself.
+  await expect(runTool(runtime.masterId, 'orchestrator_read', { resource: 'tickets' })).rejects.toMatchObject({ code: 'pluginDisabled' })
+  // A Source's Trigger is refused before the Engine stores it, so no Eval and no Ticket starts.
+  expect(runtime.receive(feishu('99', '@bot 做点事'))).toBe('filtered')
+  await runtime.idle()
+  expect(runtime.store.read.decisionsOfKinds(['accept', 'ignore', 'unavailable'], 10)).toEqual([])
+  // The flag is stored, so a restart stays disabled until the switch turns it back on.
+  const next = await restart()
+  await next.ready
+  expect(next.enabled).toBe(false)
+  expect(await api('POST', 'plugin/enabled', '{"enabled":true}')).toMatchObject({ status: 200, body: { enabled: true } })
+  expect(await runTool(next.masterId, 'orchestrator_read', { resource: 'tickets' })).toMatchObject({ items: [] })
+})
+
+
+it('refuses the tools a rich profile mounts on a Router Session, and keeps the management tools', async () => {
+  const router = guards.get(runtime.masterId)!
+  // The desktop profile mounts agent-team, terminal and memory bundles on every Session, and a preset cannot take their tools
+  // away. A Router dispatches, so they are refused by name instead of letting the model work itself.
+  for (const name of ['bash', 'terminal_send', 'list_agents', 'send_message', 'memory_remember', 'present', 'working_directory'])
+    expect(router({ name, arguments: {} }), name).toMatch(/Router Session/)
+  for (const name of ['project_dispatch', 'skill_search', 'orchestrator_read', 'orchestrator_route', 'orchestrator_reply'])
+    expect(router({ name, arguments: {} }), name).toBeUndefined()
+  // The allowlist is the tools this Session registered, so every one of them passes: a tool added to the plugin cannot be refused
+  // by a list that was not updated with it.
+  for (const name of tools.get(runtime.masterId)!.keys()) expect(router({ name, arguments: {} }), name).toBeUndefined()
+})
+
 
 it('refuses an ended ticket\'s worker its tools, and restricts the main Session to the tools it may use', async () => {
   const { ticket, sessionId } = await acceptedTicket()

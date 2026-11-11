@@ -22,11 +22,19 @@ An `idle` Ticket has finished its turn without an outstanding question. A Trigge
 
 ## The Executor
 
-Each Ticket gets an Executor Session named `worker-<ticket id>` and a directory named after the Ticket's short name. Directories are created under the configured execution root, which defaults to `<stateDir>/work`.
+Each Ticket gets an Executor Session named `worker-<ticket id>` and a directory named after the Ticket's short name. A dispatch that continues an earlier dispatch runs in that dispatch's Session instead, keeping the conversation it began; its directory is still the project's. Directories are created under the configured execution root, which defaults to `<stateDir>/work`.
 
 Executor Sessions run commands without approval as the operator's OS user. Their `dsh-superagent-worker` preset contains the tools needed for work and moves foreground shell commands to background jobs after 5 seconds. This lets a worker receive new messages at the next step instead of waiting for a long command to finish.
 
-The main Session uses `dsh-superagent-router`, with the same 5-second shell and job-wait limits and a smaller tool set for routing. Sessions retain the preset selected at creation. Worker subagents use DeepSeek Harness's `standard` preset.
+The background main Session and every project's Router Session use `dsh-superagent-router`, with the same 5-second shell and job-wait limits and a smaller tool set for routing. A Router Session is named `router-<project id>` and lives in the project's directory; the plugin opens it instead of taking over a Session a person opened, and a Session a person opens keeps the preset it was created with. A Session an earlier version already turned into the router keeps routing, since that preset carries no work tools. Worker subagents use DeepSeek Harness's `standard` preset.
+
+### Dispatched tickets
+
+A project dispatch creates a Ticket without a Source, so it has no Channel to answer into. Each dispatch gets its own Ticket, which keeps every request's Mandate and tool limits separate.
+
+When the Router judges that a request follows on from an earlier dispatch of the same project, it passes that dispatch's ticket id as `continue_ticket`: the new Ticket runs in that dispatch's Executor Session, in the conversation that already holds the project's work, and records `continuedFrom`. A Session works for one Ticket at a time. A dispatch may continue it only while its worker is idle between turns; a Ticket that receives an Input while the Session serves another waits for its turn, and the Session's prompt and tools then speak for the Ticket it takes up. A request about different work starts its own Session, which begins with a briefing of the project's earlier dispatches, so it continues from them instead of from nothing.
+
+A dispatched Ticket records `dispatcher`, the Session that dispatched it: usually its project's Router Session. Its reports and its end notice go there rather than to a background Session, so the person who asked reads the result in the conversation they asked in; a person's follow-up that reaches a Ticket goes to the same Session. With no Channel, that conversation is where the result is delivered, and the router answers a report itself instead of calling `orchestrator_reply`.
 
 ### Background work and worker slots
 
@@ -201,3 +209,17 @@ An Eval in progress does not expire during a pause; its deadline moves later by 
 ### Invalid configuration
 
 A stored Source configuration that its kind rejects disables that Source instance.
+
+### Task lines
+
+A dispatch that continues an earlier one belongs to that dispatch's task line: the chain a person means by "carry on with that". The
+ticket records `lineId`, the dispatch that started the line, and a worker Session carries one task line at a time. A continuation of
+a dispatch whose Session now serves another line is refused rather than mixing two lines' context, and the ticket page shows how far
+along its line a dispatch is. The Router's tool allowlist is the set of tools the decoration registered, so a tool added to the plugin
+is never refused by a list that was not updated with it.
+### The Router refuses the profile's own tools
+
+A Router Session runs under this bundle's router preset, but a profile mounts its own bundles' tools (agent team, terminal, memory)
+on every Session, and a preset cannot take them away. The host therefore refuses, by name, every tool a Router does not route with:
+only `orchestrator_*`, `project_dispatch` and `skill_search` run, and anything else answers that this is a Router Session and the work
+belongs in `project_dispatch`. A main Session that is not the router keeps the standard wait caps instead.

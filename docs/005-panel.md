@@ -25,7 +25,7 @@ The tabs follow the workflow: **Overview**, **Source**, **Trigger**, **Eval**, *
 
 ## Projects
 
-The sidebar seat and Overview's project block group open Tickets under the project each dispatch named. A project is created by the first `project_dispatch` that names it, so it needs no setup; the workspace the dispatch ran in is recorded with it. Double-clicking a project name in the sidebar renames it, and its Tickets keep pointing at the same project.
+The sidebar seat and Overview's project block show three levels: a project, the Router Session the plugin opened for it, and that project's worker Sessions, folded away until a person opens them. A project is created by the first `project_dispatch` that names it or by a person's new Session in a workspace, so it needs no setup; the workspace is recorded with it, and one directory holds one project whatever name a dispatch gives it. Each project gets its own Router Session, titled `Router · <project>`, in the project's directory; the plugin creates it rather than turning the person's own Session into a router, and a rename reaches the Session's title. Double-clicking a project name in the sidebar renames it, and its Tickets keep pointing at the same project. A dispatch that continues an earlier dispatch of the project opens that dispatch's worker Session, so both rows open the one conversation that holds the work; a Session is never shared across projects.
 
 ### Reading individual records
 
@@ -35,6 +35,15 @@ A human follow-up still owned by an Executor is marked **Delivered to Ticket**, 
 
 Ticket details show the originating Trigger, Decision and reason, scope and Policy version. Assignments and secondary details are folded below the immediate actions. **Retry** is available for failed Input delivery or a Ticket waiting for a person after a blocked or failed Report. Ended Tickets show outcomes such as **Pull request merged** or **Stopped by a person**.
 
+## The plugin switch
+
+The plugin's page in the Plugin Manager carries one switch. Turning it off takes effect at once, without a restart: the panel
+and the sidebar's project seat unregister, every tool the plugin registered refuses to run (`pluginDisabled`), Sources stop
+polling and the Feishu consumer stops, and no pass runs, so triggers a Source still offers are not taken in. The page itself
+stays registered, so it is the way back. Turning it on again registers the views and resumes polling on the next pass.
+
+`GET state` carries `enabled`, and `POST plugin/enabled` writes it; the flag lives in the `kv` table, so a restart keeps it.
+The switch is not DSH's bundle-level enable/disable, which unloads the whole plugin and needs a restart.
 ## Settings groups
 
 - **Sources:** one card per Source with its switch, fields and verified account facts. GitHub also offers receive-all switches for new Issues, pull requests, comments and default-branch CI. Polling and read limits are under Advanced.
